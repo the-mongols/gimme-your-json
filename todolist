@@ -1,0 +1,12 @@
+Where things stand: 
+// GET request for [PN31] clan battle data works. Currently the slash command just GETs the data and responds to user with the file. 
+// Slash commands are properly set up with registration, deployment, and clearing. 
+
+What's left for the plan: 
+// Need to answer "What other GET requests are required for the total sum of data used by this bot (Lineup generator && || Roster Management in GSheets )?". 
+// What does Roster Management actually look like? Am I reusing manbear's sheet and scripts? Consider looking to see what GET requests he uses across the API, and how it's scripted in AppScripts. 
+// Figure out SQL database. If bot is pulling a handful of JSON files off API every few days, what's the simplest solution to parse and handle it in backend? Is Drizzle ORM necessary?  
+// If ORM is worth it, I'd need to write code for this bot to use it. Look into it. 
+
+CURRENTLY WORKING ON:
+// Finding out all the GET requests required.  3

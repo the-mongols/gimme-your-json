@@ -1,0 +1,2 @@
+// Drizzle database schema definitions
+

@@ -1,0 +1,2 @@
+// Bot ready event
+
