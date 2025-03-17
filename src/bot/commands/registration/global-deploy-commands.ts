@@ -9,6 +9,11 @@ type RestResponse = {
   length: number;
 };
 
+type CommandLocation = {
+  path: string;
+  category: string;
+};
+
 // Function to parse JSON with comments
 function parseJsonWithComments(jsonString: string): any {
   // Remove // comments and /* */ comments
@@ -26,7 +31,7 @@ const token = process.env.DISCORD_BOT_TOKEN;
 
 // Validate required environment variables
 if (!clientId || !token) {
-  console.error('Missing required environment variables in .env.local file.');
+  console.error('Missing required environment variables in .env file.');
   console.error('Required: DISCORD_CLIENT_ID, DISCORD_BOT_TOKEN');
   process.exit(1);
 }
@@ -40,54 +45,43 @@ const commands: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [];
 
 // Function to load commands asynchronously
 async function loadCommandFiles(): Promise<void> {
-  console.log('Loading command files for deployment...');
+  console.log('Loading command files for global deployment...');
   
-  // Check if tsconfig.json exists and load configuration options if needed
-  const tsconfigPath = path.join(__dirname, 'tsconfig.json');
-  let tsconfig: any = {};
+  // Find all command locations
+  const commandLocations: CommandLocation[] = [];
   
-  if (fs.existsSync(tsconfigPath)) {
-    try {
-      const tsconfigRaw = fs.readFileSync(tsconfigPath, 'utf8');
-      // Use custom parser instead of JSON.parse
-      tsconfig = parseJsonWithComments(tsconfigRaw);
-      console.log('Loaded TypeScript configuration from tsconfig.json');
-    } catch (error) {
-      console.warn('Error loading tsconfig.json:', error);
+  // 1. Look for commands directly in the src/bot/commands directory (excluding registration)
+  const commandsBasePath = path.join(__dirname, '..');
+  
+  fs.readdirSync(commandsBasePath).forEach(item => {
+    const itemPath = path.join(commandsBasePath, item);
+    if (fs.statSync(itemPath).isDirectory() && item !== 'registration') {
+      commandLocations.push({ path: itemPath, category: item });
     }
-  } else {
-    console.warn('No tsconfig.json found in the project root');
+  });
+  
+  // 2. Look for commands in working_former_commands subdirectories
+  const workingFormerPath = path.join(commandsBasePath, 'working_former_commands');
+  if (fs.existsSync(workingFormerPath) && fs.statSync(workingFormerPath).isDirectory()) {
+    fs.readdirSync(workingFormerPath).forEach(category => {
+      const categoryPath = path.join(workingFormerPath, category);
+      if (fs.statSync(categoryPath).isDirectory()) {
+        commandLocations.push({ path: categoryPath, category });
+      }
+    });
   }
   
-  // Determine the commands folder path
-  const foldersPath = path.join(__dirname, 'commands');
+  console.log(`Found ${commandLocations.length} command locations to scan`);
   
-  if (!fs.existsSync(foldersPath)) {
-    console.error(`Commands directory not found at ${foldersPath}`);
-    return;
-  }
-  
-  console.log(`Looking for commands in: ${foldersPath}`);
-  const commandFolders = fs.readdirSync(foldersPath);
-  console.log(`Found command folders: ${commandFolders.join(', ')}`);
-
-  for (const folder of commandFolders) {
-    // Grab all the command files from the commands directory
-    const commandsPath = path.join(foldersPath, folder);
-    
-    // Skip if not a directory
-    if (!fs.existsSync(commandsPath) || !fs.statSync(commandsPath).isDirectory()) {
-      console.warn(`${commandsPath} is not a valid directory, skipping`);
-      continue;
-    }
-    
-    console.log(`Processing folder: ${folder}`);
+  // Process each command location
+  for (const { path: commandsPath, category } of commandLocations) {
+    console.log(`Processing ${category} commands from: ${commandsPath}`);
     
     const commandFiles = fs.readdirSync(commandsPath).filter(file => 
       file.endsWith('.js') || file.endsWith('.ts')
     );
     
-    console.log(`Found command files in ${folder}: ${commandFiles.join(', ')}`);
+    console.log(`Found ${commandFiles.length} command files in ${category}`);
     
     // Load each command file
     for (const file of commandFiles) {
@@ -100,7 +94,7 @@ async function loadCommandFiles(): Promise<void> {
         // Handle both default and named exports
         const command = commandModule.default || commandModule;
         
-        if ('data' in command && 'execute' in command) {
+        if (command && 'data' in command && 'execute' in command) {
           // Check if command is already in the array to avoid duplicates
           const existingCommandIndex = commands.findIndex(cmd => 
             cmd.name === command.data.name
@@ -122,7 +116,7 @@ async function loadCommandFiles(): Promise<void> {
   }
   
   // Report the total number of commands found
-  console.log(`Found ${commands.length} commands to deploy.`);
+  console.log(`Found ${commands.length} commands to deploy globally.`);
 }
 
 // Deploy commands
@@ -136,7 +130,7 @@ async function deployCommands(): Promise<void> {
       return;
     }
     
-    console.log(`Started refreshing ${commands.length} application (/) commands.`);
+    console.log(`Started refreshing ${commands.length} application (/) commands globally.`);
 
     // Type assertions for environment variables
     const validToken: string = token as string;
@@ -145,36 +139,16 @@ async function deployCommands(): Promise<void> {
     // Construct and prepare an instance of the REST module
     const rest = new REST().setToken(validToken);
 
-    // Ask user if they want to deploy globally or to a specific guild
-    const deployGlobally = !guildId || process.argv.includes('--global');
-    let data: RestResponse;
-    
-    if (deployGlobally) {
-      console.log('Deploying commands globally (this may take up to an hour to propagate)');
-      // The put method is used to fully refresh all commands globally
-      data = await rest.put(
-        Routes.applicationCommands(validClientId),
-        { body: commands },
-      ) as RestResponse;
-    } else {
-      if (!guildId) {
-        throw new Error('Guild ID is required for guild deployment but was not provided');
-      }
-      console.log(`Deploying commands to guild ID: ${guildId}`);
-      // The put method is used to fully refresh all commands in the guild
-      data = await rest.put(
-        Routes.applicationGuildCommands(validClientId, guildId),
-        { body: commands },
-      ) as RestResponse;
-    }
+    // The put method is used to fully refresh all commands globally
+    const data = await rest.put(
+      Routes.applicationCommands(validClientId),
+      { body: commands },
+    ) as RestResponse;
 
-    console.log(`Successfully reloaded ${data.length} application (/) commands.`);
-    
-    if (deployGlobally) {
-      console.log('Note: Global commands may take up to an hour to appear in all servers.');
-    }
+    console.log(`Successfully reloaded ${data.length} application (/) commands globally.`);
+    console.log('Note: Global commands may take up to an hour to appear in all servers.');
   } catch (error) {
-    console.error('Error deploying commands:', error);
+    console.error('Error deploying commands globally:', error);
   }
 }
 

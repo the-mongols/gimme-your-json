@@ -16,7 +16,16 @@ export default {
             option.setName('command')
                 .setDescription('The command to reload.')
                 .setRequired(true)),
+    
     async execute(interaction: ChatInputCommandInteraction) {
+        // Check if the user has admin permission
+        if (!interaction.memberPermissions?.has('Administrator')) {
+            return interaction.reply({
+                content: 'You need administrator permission to use this command.',
+                ephemeral: true
+            });
+        }
+        
         const commandName = interaction.options.getString('command', true).toLowerCase();
         const command = interaction.client.commands.get(commandName);
 
@@ -24,12 +33,48 @@ export default {
             return interaction.reply(`There is no command with name \`${commandName}\`!`);
         }
 
-        const commandFolderPath = path.join(__dirname, '..', command.category);
-        const commandFilePath = path.join(commandFolderPath, `${command.data.name}.ts`);
+        // Try to find the command file
+        let commandFilePath = '';
         
-        // Check if the file exists
-        if (!fs.existsSync(commandFilePath)) {
-            return interaction.reply(`Could not find the command file at \`${commandFilePath}\`!`);
+        // Look in regular command folders
+        const commandsDir = path.join(__dirname, '..');
+        const categories = fs.readdirSync(commandsDir)
+            .filter(dir => fs.statSync(path.join(commandsDir, dir)).isDirectory() && dir !== 'registration');
+            
+        // Check each category folder
+        for (const category of categories) {
+            const folderPath = path.join(commandsDir, category);
+            const filePath = path.join(folderPath, `${commandName}.ts`);
+            
+            if (fs.existsSync(filePath)) {
+                commandFilePath = filePath;
+                break;
+            }
+        }
+        
+        // Also check working_former_commands if not found
+        if (!commandFilePath) {
+            const workingFormerDir = path.join(commandsDir, 'working_former_commands');
+            if (fs.existsSync(workingFormerDir)) {
+                const workingCategories = fs.readdirSync(workingFormerDir)
+                    .filter(dir => fs.statSync(path.join(workingFormerDir, dir)).isDirectory());
+                    
+                // Check each category folder within working_former_commands
+                for (const category of workingCategories) {
+                    const folderPath = path.join(workingFormerDir, category);
+                    const filePath = path.join(folderPath, `${commandName}.ts`);
+                    
+                    if (fs.existsSync(filePath)) {
+                        commandFilePath = filePath;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Check if the file was found
+        if (!commandFilePath) {
+            return interaction.reply(`Could not find the command file for \`${commandName}\`!`);
         }
 
         try {

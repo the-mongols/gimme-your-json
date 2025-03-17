@@ -1,5 +1,8 @@
 // Main entry point for Bun application
 
+
+// Following to soon be deleted
+
 import { db } from "./database/db";
 import { sql } from "drizzle-orm";
 

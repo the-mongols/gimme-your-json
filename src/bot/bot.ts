@@ -1,6 +1,7 @@
 // ./src/bot -> Core bot logic for Discord.js 
 
-// Bot initialization
+
+// Core bot initialization file
 
 // Import required discord.js classes
 import {
@@ -10,24 +11,27 @@ import {
     Partials, 
     REST
 } from 'discord.js';
-import type { Interaction, ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
+import type { Interaction, ChatInputCommandInteraction } from 'discord.js';
+import { SlashCommandBuilder } from '@discordjs/builders';
 import fs from 'node:fs'; 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Import Drizzle ORM for Bun
+// Import database connection
+import { db } from '../database/db.js';
 
-
+// Define Command interface with proper types
 export interface Command {
-    category: string;
-    data: SlashCommandBuilder;
+    category?: string; // Category is optional
+    data: SlashCommandBuilder | any; // Allow any for complex builders with options
     execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
+    cooldown?: number; // Cooldown is optional
 }
 
-// Extend Client type
+// Extend Client type for TypeScript support
 declare module 'discord.js' {
     export interface Client {
-        commands: Collection<string, any>;
+        commands: Collection<string, Command>;
         cooldowns: Collection<string, Collection<string, number>>;
     }
 }
@@ -59,7 +63,7 @@ const client = new Client({
 });
 
 // Initialize commands collection
-client.commands = new Collection<string, any>();
+client.commands = new Collection<string, Command>();
 client.cooldowns = new Collection();
 
 // Command loading function
@@ -74,54 +78,33 @@ async function loadCommands() {
         return;
     }
 
-    const commandFolders = fs.readdirSync(foldersPath);
+    // Load commands from direct category folders (except registration)
+    const commandFolders = fs.readdirSync(foldersPath).filter(folder => {
+        const folderPath = path.join(foldersPath, folder);
+        return fs.existsSync(folderPath) && 
+               fs.statSync(folderPath).isDirectory() && 
+               folder !== 'registration'; // Skip registration folder
+    });
+    
     console.log(`Found command folders: ${commandFolders.join(', ')}`);
 
+    // Process regular command folders
     for (const folder of commandFolders) {
-        const commandsPath = path.join(foldersPath, folder);
-
-        // Skip if not a directory
-        if (!fs.existsSync(commandsPath) || !fs.statSync(commandsPath).isDirectory()) {
-            console.warn(`${commandsPath} is not a valid directory, skipping`);
-            continue;
-        }
-
-        console.log(`Processing folder: ${folder}`);
-
-        const commandFiles = fs.readdirSync(commandsPath).filter((file) => {
-            return file.endsWith('.js') || file.endsWith('.ts');
+        await loadCommandsFromFolder(path.join(foldersPath, folder), folder);
+    }
+    
+    // Also check working_former_commands directory
+    const workingFormerPath = path.join(foldersPath, 'working_former_commands');
+    if (fs.existsSync(workingFormerPath) && fs.statSync(workingFormerPath).isDirectory()) {
+        console.log('Found working_former_commands directory, loading commands from there as well');
+        
+        const workingFolders = fs.readdirSync(workingFormerPath).filter(folder => {
+            const folderPath = path.join(workingFormerPath, folder);
+            return fs.existsSync(folderPath) && fs.statSync(folderPath).isDirectory();
         });
-
-        console.log(`Found command files in ${folder}: ${commandFiles.join(', ')}`);
-
-        for (const file of commandFiles) {
-            const filePath = path.join(commandsPath, file);
-            console.log(`Loading command from: ${filePath}`);
-
-            try {
-                // Use dynamic import for ESM
-                const commandModule = await import(`file://${filePath}`);
-
-                // Handle both default and named exports
-                const command = commandModule.default || commandModule;
-
-                // Log the command structure for debugging
-                console.log(`Command structure for ${file}:`, {
-                    hasData: 'data' in command, 
-                    hasExecute: 'execute' in command,
-                    name: command.data?.name || 'undefined'
-                });
-
-                // Add command to collection
-                if ('data' in command && 'execute' in command) {
-                    client.commands.set(command.data.name, command);
-                    console.log(`✅ Successfully loaded command: ${command.data.name}`);
-                } else {
-                    console.warn(`⚠️ The command at ${filePath} is missing a required "data" or "execute" property.`);
-                }
-            } catch (error) {
-                console.error(`❌ Error loading command from ${filePath}:`, error);
-            }
+        
+        for (const folder of workingFolders) {
+            await loadCommandsFromFolder(path.join(workingFormerPath, folder), folder);
         }
     }
 
@@ -134,48 +117,110 @@ async function loadCommands() {
     });
 }
 
+// Helper function to load commands from a specific folder
+async function loadCommandsFromFolder(commandsPath: string, category: string) {
+    console.log(`Processing folder: ${category}`);
+    
+    if (!fs.existsSync(commandsPath) || !fs.statSync(commandsPath).isDirectory()) {
+        console.warn(`${commandsPath} is not a valid directory, skipping`);
+        return;
+    }
+
+    const commandFiles = fs.readdirSync(commandsPath).filter((file) => {
+        return file.endsWith('.js') || file.endsWith('.ts');
+    });
+
+    console.log(`Found command files in ${category}: ${commandFiles.join(', ')}`);
+
+    for (const file of commandFiles) {
+        const filePath = path.join(commandsPath, file);
+        console.log(`Loading command from: ${filePath}`);
+
+        try {
+            // Use dynamic import for ESM
+            const commandModule = await import(`file://${filePath}`);
+
+            // Handle both default and named exports
+            const command = commandModule.default || commandModule;
+
+            // Add category if missing
+            if (command && !command.category) {
+                command.category = category;
+            }
+
+            // Log the command structure for debugging
+            console.log(`Command structure for ${file}:`, {
+                hasData: command && 'data' in command, 
+                hasExecute: command && 'execute' in command,
+                name: command && command.data?.name || 'undefined'
+            });
+
+            // Add command to collection
+            if (command && 'data' in command && 'execute' in command) {
+                client.commands.set(command.data.name, command);
+                console.log(`✅ Successfully loaded command: ${command.data.name}`);
+            } else {
+                console.warn(`⚠️ The command at ${filePath} is missing a required "data" or "execute" property.`);
+            }
+        } catch (error) {
+            console.error(`❌ Error loading command from ${filePath}:`, error);
+        }
+    }
+}
+
 // Setup event handlers
 async function setupEventHandlers() {
     console.log('Setting up event handlers...');
 
-    const eventsPath = path.join(__dirname, 'events');
-    console.log(`Looking for events in: ${eventsPath}`);
+    // Check both potential event directories
+    const eventsPaths = [
+        path.join(__dirname, 'events'),
+        path.join(process.cwd(), 'events') // Also check root events directory
+    ];
+    
+    let eventsLoaded = 0;
+    
+    for (const eventsPath of eventsPaths) {
+        console.log(`Looking for events in: ${eventsPath}`);
 
-    if (!fs.existsSync(eventsPath)) {
-        console.error(`Events directory not found at: ${eventsPath}`);
-        return;
-    }
+        if (!fs.existsSync(eventsPath)) {
+            console.log(`Events directory not found at: ${eventsPath}`);
+            continue;
+        }
 
-    const eventFiles = fs.readdirSync(eventsPath).filter(file => 
-        file.endsWith('.js') || file.endsWith('.ts')
-    );
+        const eventFiles = fs.readdirSync(eventsPath).filter(file => 
+            file.endsWith('.js') || file.endsWith('.ts')
+        );
 
-    console.log(`Found event files: ${eventFiles.join(', ')}`);
+        console.log(`Found event files in ${eventsPath}: ${eventFiles.join(', ')}`);
 
-    for (const file of eventFiles) {
-        const filePath = path.join(eventsPath, file);
-        console.log(`Loading event from: ${filePath}`);
+        for (const file of eventFiles) {
+            const filePath = path.join(eventsPath, file);
+            console.log(`Loading event from: ${filePath}`);
 
-        try {
-            // Use dynamic import for ESM
-            const eventModule = await import(`file://${filePath}`);
+            try {
+                // Use dynamic import for ESM
+                const eventModule = await import(`file://${filePath}`);
 
-            // Handle both default and named exports
-            const event = eventModule.default || eventModule;
+                // Handle both default and named exports
+                const event = eventModule.default || eventModule;
 
-            if (event.once) {
-                client.once(event.name, (...args) => event.execute(...args));
-                console.log(`✅ Successfully registered once event: ${event.name}`);
-            } else {
-                client.on(event.name, (...args) => event.execute(...args));
-                console.log(`✅ Successfully registered on event: ${event.name}`);
+                if (event.once) {
+                    client.once(event.name, (...args) => event.execute(...args));
+                    console.log(`✅ Successfully registered once event: ${event.name}`);
+                } else {
+                    client.on(event.name, (...args) => event.execute(...args));
+                    console.log(`✅ Successfully registered on event: ${event.name}`);
+                }
+                
+                eventsLoaded++;
+            } catch (error) {
+                console.error(`❌ Error loading event from ${filePath}:`, error);
             }
-        } catch (error) {
-            console.error(`❌ Error loading event from ${filePath}:`, error);
         }
     }
 
-    console.log('Event handlers loaded successfully');
+    console.log(`Event handlers loaded successfully: ${eventsLoaded} events registered`);
 }
 
 // Main function to initialize the bot

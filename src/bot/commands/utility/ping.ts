@@ -3,6 +3,7 @@ import type { ChatInputCommandInteraction } from 'discord.js';
 
 // Define the ping command
 const pingCommand = {
+  category: 'utility', // Adding explicit category
   cooldown: 5,
   data: new SlashCommandBuilder()
     .setName('ping')
@@ -10,7 +11,13 @@ const pingCommand = {
   
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     console.log('Ping command executed by', interaction.user.tag);
-    await interaction.reply('Pong!');
+    
+    // Get API ping
+    const sent = await interaction.reply({ content: 'Pinging...', fetchReply: true });
+    const ping = sent.createdTimestamp - interaction.createdTimestamp;
+    
+    // Edit the reply with the calculated ping
+    await interaction.editReply(`Pong! 🏓\nBot Latency: ${ping}ms\nAPI Latency: ${Math.round(interaction.client.ws.ping)}ms`);
   }
 };
 

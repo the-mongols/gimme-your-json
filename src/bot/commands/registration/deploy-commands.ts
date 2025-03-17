@@ -1,7 +1,13 @@
 import { REST, Routes } from 'discord.js';
+import type { RESTPostAPIChatInputApplicationCommandsJSONBody } from 'discord.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// Define types for better type safety
+type RestResponse = {
+  length: number;
+};
 
 // Function to parse JSON with comments
 function parseJsonWithComments(jsonString: string): any {
@@ -13,14 +19,14 @@ function parseJsonWithComments(jsonString: string): any {
   return JSON.parse(noComments);
 }
 
-// Get config values from environment variables
+// Get config values from environment variables (using Bun's built-in .env support)
 const clientId = process.env.DISCORD_CLIENT_ID;
 const guildId = process.env.DISCORD_GUILD_ID;
 const token = process.env.DISCORD_BOT_TOKEN;
 
 // Validate required environment variables
 if (!clientId || !guildId || !token) {
-  console.error('Missing required environment variables in .env.local file.');
+  console.error('Missing required environment variables in .env file.');
   console.error('Required: DISCORD_CLIENT_ID, DISCORD_GUILD_ID, DISCORD_BOT_TOKEN');
   process.exit(1);
 }
@@ -30,58 +36,53 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Create an array to hold commands
-const commands: any[] = [];
+const commands: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [];
 
 // Function to load commands asynchronously
-async function loadCommandFiles() {
+async function loadCommandFiles(): Promise<void> {
   console.log('Loading command files for deployment...');
   
-  // Check if tsconfig.json exists and load configuration options if needed
-  const tsconfigPath = path.join(__dirname, 'tsconfig.json');
-  let tsconfig: any = {};
+  // Define type for command locations
+  type CommandLocation = {
+    path: string;
+    category: string;
+  };
   
-  if (fs.existsSync(tsconfigPath)) {
-    try {
-      const tsconfigRaw = fs.readFileSync(tsconfigPath, 'utf8');
-      // Use custom parser instead of JSON.parse
-      tsconfig = parseJsonWithComments(tsconfigRaw);
-      console.log('Loaded TypeScript configuration from tsconfig.json');
-    } catch (error) {
-      console.warn('Error loading tsconfig.json:', error);
+  // Find all command locations
+  const commandLocations: CommandLocation[] = [];
+  
+  // 1. Look for commands directly in the src/bot/commands directory (excluding registration)
+  const commandsBasePath = path.join(__dirname, '..');
+  
+  fs.readdirSync(commandsBasePath).forEach(item => {
+    const itemPath = path.join(commandsBasePath, item);
+    if (fs.statSync(itemPath).isDirectory() && item !== 'registration') {
+      commandLocations.push({ path: itemPath, category: item });
     }
-  } else {
-    console.warn('No tsconfig.json found in the project root');
+  });
+  
+  // 2. Look for commands in working_former_commands subdirectories
+  const workingFormerPath = path.join(commandsBasePath, 'working_former_commands');
+  if (fs.existsSync(workingFormerPath) && fs.statSync(workingFormerPath).isDirectory()) {
+    fs.readdirSync(workingFormerPath).forEach(category => {
+      const categoryPath = path.join(workingFormerPath, category);
+      if (fs.statSync(categoryPath).isDirectory()) {
+        commandLocations.push({ path: categoryPath, category });
+      }
+    });
   }
   
-  // Determine the commands folder path
-  const foldersPath = path.join(__dirname, 'commands');
+  console.log(`Found ${commandLocations.length} command locations to scan`);
   
-  if (!fs.existsSync(foldersPath)) {
-    console.error(`Commands directory not found at ${foldersPath}`);
-    return;
-  }
-  
-  console.log(`Looking for commands in: ${foldersPath}`);
-  const commandFolders = fs.readdirSync(foldersPath);
-  console.log(`Found command folders: ${commandFolders.join(', ')}`);
-
-  for (const folder of commandFolders) {
-    // Grab all the command files from the commands directory
-    const commandsPath = path.join(foldersPath, folder);
-    
-    // Skip if not a directory
-    if (!fs.existsSync(commandsPath) || !fs.statSync(commandsPath).isDirectory()) {
-      console.warn(`${commandsPath} is not a valid directory, skipping`);
-      continue;
-    }
-    
-    console.log(`Processing folder: ${folder}`);
+  // Process each command location
+  for (const { path: commandsPath, category } of commandLocations) {
+    console.log(`Processing ${category} commands from: ${commandsPath}`);
     
     const commandFiles = fs.readdirSync(commandsPath).filter(file => 
       file.endsWith('.js') || file.endsWith('.ts')
     );
     
-    console.log(`Found command files in ${folder}: ${commandFiles.join(', ')}`);
+    console.log(`Found ${commandFiles.length} command files in ${category}`);
     
     // Load each command file
     for (const file of commandFiles) {
@@ -94,9 +95,18 @@ async function loadCommandFiles() {
         // Handle both default and named exports
         const command = commandModule.default || commandModule;
         
-        if ('data' in command && 'execute' in command) {
-          commands.push(command.data.toJSON());
-          console.log(`✅ Added command: ${command.data.name} for deployment`);
+        if (command && 'data' in command && 'execute' in command) {
+          // Check if command is already in the array to avoid duplicates
+          const existingCommandIndex = commands.findIndex(cmd => 
+            cmd.name === command.data.name
+          );
+          
+          if (existingCommandIndex >= 0) {
+            console.log(`⚠️ Command ${command.data.name} already registered, skipping duplicate`);
+          } else {
+            commands.push(command.data.toJSON());
+            console.log(`✅ Added command: ${command.data.name} for deployment`);
+          }
         } else {
           console.log(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
         }
@@ -111,7 +121,7 @@ async function loadCommandFiles() {
 }
 
 // Deploy commands
-async function deployCommands() {
+async function deployCommands(): Promise<void> {
   try {
     // First load all commands
     await loadCommandFiles();
@@ -135,7 +145,7 @@ async function deployCommands() {
     const data = await rest.put(
       Routes.applicationGuildCommands(validClientId, validGuildId),
       { body: commands },
-    ) as any[];
+    ) as RestResponse;
 
     console.log(`Successfully reloaded ${data.length} application (/) commands.`);
   } catch (error) {
