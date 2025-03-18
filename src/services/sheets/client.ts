@@ -2,6 +2,7 @@ import { db } from '../../database/db.js';
 import { players, ships } from '../../database/drizzle/schema.js';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { eq } from 'drizzle-orm';
 
 // Direct Google API method to avoid dependencies
 async function uploadToGoogleSheets(
@@ -115,10 +116,10 @@ async function getPlayersWithShips() {
   const playersWithShips = [];
   
   for (const player of allPlayers) {
-    // Query ships for this player
+    // Query ships for this player - Fix: use eq() for comparison instead of ==
     const playerShips = await db.select()
       .from(ships)
-      .where(ships.playerId == player.id);
+      .where(eq(ships.playerId, player.id));
     
     playersWithShips.push({
       ...player,

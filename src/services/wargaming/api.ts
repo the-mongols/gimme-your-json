@@ -1,7 +1,8 @@
 import { db } from "../../database/db.js";
-import { players, ships } from "../../database/drizzle/schema.js";
-import { calculateShipScore } from "../metrics/calculator.js";
+import { players, ships, statHistory } from "../../database/drizzle/schema.js";
 import { eq } from "drizzle-orm";
+// Fixed import path to correctly point to the metrics calculator
+import { calculateShipScore as calculateScore } from "../../services/metrics/calculator.js";
 
 // API configuration
 const WG_API_KEY = process.env.WG_API_KEY;
@@ -161,21 +162,23 @@ export async function updatePlayerDataInDb(accountId: string) {
     // Fetch player account data
     const playerData = await fetchPlayerById(accountId);
     
-    // Update player record
-    await db.insert(players)
-      .values({
-        id: accountId,
-        username: playerData.nickname,
-        clanTag: null, // This will be updated if clan info is fetched
-        lastUpdated: Date.now()
-      })
-      .onConflictDoUpdate({
-        target: players.id,
-        set: {
+    // Check if player already exists to get the discordId
+    const existingPlayer = await db.select().from(players).where(eq(players.id, accountId)).get();
+    
+    if (existingPlayer) {
+      // Update player record
+      await db.update(players)
+        .set({
           username: playerData.nickname,
+          clanTag: playerData.clan?.tag || null,
           lastUpdated: Date.now()
-        }
-      });
+        })
+        .where(eq(players.id, accountId));
+    } else {
+      // Can't insert without discordId as it's required
+      console.warn(`Player ${accountId} not found in database, can't update`);
+      return;
+    }
     
     console.log(`Player ${playerData.nickname} (${accountId}) info updated`);
     
@@ -204,9 +207,8 @@ export async function updatePlayerDataInDb(accountId: string) {
       const damageAvg = shipData.pvp.damage_dealt / battles;
       const fragAvg = shipData.pvp.frags / battles;
       
-      // Calculate your compound score (WAR-like metric)
-      // This is just a placeholder - use your actual calculation from calculator.js
-      const shipScore = calculateShipScore({
+      // Calculate ship score
+      const shipScore = calculateScore({
         shipType: shipInfo.type,
         tier: shipInfo.tier,
         winRate,
@@ -285,7 +287,7 @@ async function updateShipHistory(shipId: string, stats: any) {
     const timestamp = today.getTime();
     
     // Insert or update history record for today
-    await db.insert(ships)
+    await db.insert(statHistory)
       .values({
         shipId: shipId,
         date: timestamp,
@@ -295,7 +297,7 @@ async function updateShipHistory(shipId: string, stats: any) {
         shipScore: stats.shipScore
       })
       .onConflictDoUpdate({
-        target: [ships.shipId, ships.date],
+        target: [statHistory.shipId, statHistory.date],
         set: {
           battles: stats.battles,
           winRate: stats.winRate,

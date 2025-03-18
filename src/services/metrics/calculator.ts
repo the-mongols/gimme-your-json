@@ -12,11 +12,11 @@ const DEFAULT_WEIGHTS = {
   };
   
   // Base expected values by tier and ship type
-  const BASE_EXPECTED = {
+  const BASE_EXPECTED: Record<string, Record<string, { winRate: number; survivalRate: number; damage: number; frags: number }>> = {
     // Format: [tier][type] = { winRate, survivalRate, damage }
     
     // Tier 5
-    5: {
+    "5": {
       "DD": { winRate: 50, survivalRate: 30, damage: 25000, frags: 0.7 },
       "CA": { winRate: 51, survivalRate: 35, damage: 35000, frags: 0.8 },
       "BB": { winRate: 52, survivalRate: 40, damage: 45000, frags: 0.6 },
@@ -24,7 +24,7 @@ const DEFAULT_WEIGHTS = {
     },
     
     // Tier 6
-    6: {
+    "6": {
       "DD": { winRate: 50, survivalRate: 30, damage: 30000, frags: 0.8 },
       "CA": { winRate: 51, survivalRate: 35, damage: 40000, frags: 0.9 },
       "BB": { winRate: 52, survivalRate: 40, damage: 55000, frags: 0.7 },
@@ -32,7 +32,7 @@ const DEFAULT_WEIGHTS = {
     },
     
     // Tier 7
-    7: {
+    "7": {
       "DD": { winRate: 50, survivalRate: 30, damage: 35000, frags: 0.9 },
       "CA": { winRate: 51, survivalRate: 35, damage: 45000, frags: 1.0 },
       "BB": { winRate: 52, survivalRate: 40, damage: 65000, frags: 0.8 },
@@ -40,7 +40,7 @@ const DEFAULT_WEIGHTS = {
     },
     
     // Tier 8
-    8: {
+    "8": {
       "DD": { winRate: 50, survivalRate: 30, damage: 40000, frags: 1.0 },
       "CA": { winRate: 51, survivalRate: 35, damage: 55000, frags: 1.1 },
       "BB": { winRate: 52, survivalRate: 40, damage: 75000, frags: 0.9 },
@@ -48,7 +48,7 @@ const DEFAULT_WEIGHTS = {
     },
     
     // Tier 9
-    9: {
+    "9": {
       "DD": { winRate: 50, survivalRate: 30, damage: 45000, frags: 1.1 },
       "CA": { winRate: 51, survivalRate: 35, damage: 65000, frags: 1.2 },
       "BB": { winRate: 52, survivalRate: 40, damage: 85000, frags: 1.0 },
@@ -56,7 +56,7 @@ const DEFAULT_WEIGHTS = {
     },
     
     // Tier 10
-    10: {
+    "10": {
       "DD": { winRate: 50, survivalRate: 30, damage: 50000, frags: 1.2 },
       "CA": { winRate: 51, survivalRate: 35, damage: 75000, frags: 1.3 },
       "BB": { winRate: 52, survivalRate: 40, damage: 100000, frags: 1.1 },
@@ -106,10 +106,13 @@ const DEFAULT_WEIGHTS = {
   
   // Get expected values for a given tier and ship type
   function getExpectedValues(tier: number, shipType: string) {
+    // Convert tier to string for use as a key
+    const tierStr = tier.toString();
+    
     // If exact tier not found, use closest tier
     const validTier = Object.keys(BASE_EXPECTED)
       .map(Number)
-      .sort((a, b) => Math.abs(a - tier) - Math.abs(b - tier))[0];
+      .sort((a, b) => Math.abs(a - tier) - Math.abs(b - tier))[0].toString();
     
     // If ship type not found, use CA (cruiser) as default
     const validType = BASE_EXPECTED[validTier][shipType] 

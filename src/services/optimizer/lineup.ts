@@ -1,6 +1,6 @@
 import { db } from "../../database/db.js";
 import { players, ships } from "../../database/drizzle/schema.js";
-import { and, eq, inArray, desc, gt } from "drizzle-orm";
+import { and, eq, inArray, desc, gt, gte, lte } from "drizzle-orm";
 
 export interface ShipWithScore {
   id: string;
@@ -69,16 +69,21 @@ export async function generateOptimalLineup(
       and(
         inArray(ships.playerId, playerIds),
         gt(ships.battles, 10), // Minimum battles requirement
-        ships.tier >= composition.minTier,
-        ships.tier <= composition.maxTier
+        gte(ships.tier, composition.minTier), // Fixed comparison
+        lte(ships.tier, composition.maxTier)  // Fixed comparison
       )
     )
     .orderBy(desc(ships.shipScore));
     
-    // Add player names to each ship
-    const shipsWithPlayerNames = availableShips.map(ship => ({
+    // Add player names and ensure all values are properly handled
+    const shipsWithPlayerNames: ShipWithScore[] = availableShips.map(ship => ({
       ...ship,
-      playerName: playerMap[ship.playerId] || 'Unknown'
+      playerName: playerMap[ship.playerId] || 'Unknown',
+      // Ensure values are never null (fix for the type incompatibility)
+      shipScore: ship.shipScore || 0,
+      winRate: ship.winRate || 0, 
+      survivalRate: ship.survivalRate || 0,
+      damageAvg: ship.damageAvg || 0
     }));
     
     // 3. Run the optimization algorithm
@@ -189,8 +194,3 @@ function greedyTeamOptimization(
     composition: actualComposition
   };
 }
-
-// Alternative algorithm options could be implemented here:
-// - Mixed integer programming
-// - Genetic algorithm
-// - Simulated annealing

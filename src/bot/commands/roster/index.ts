@@ -1,5 +1,5 @@
 // Player roster management commands
-import { SlashCommandBuilder, PermissionFlagsBits } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, TextChannel } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
 import { db } from '../../../database/db.js';
 import { players } from '../../../database/drizzle/schema.js';
@@ -257,10 +257,8 @@ async function handleRemovePlayer(interaction: ChatInputCommandInteraction): Pro
     });
     
     // Create a message collector for confirmation
-    const filter = (m: any) => m.author.id === interaction.user.id && m.content.toLowerCase() === 'confirm';
-    const channel = await interaction.channel?.fetch();
-    
-    if (!channel) {
+    // Check if the channel is a text channel first
+    if (!interaction.channel || !('createMessageCollector' in interaction.channel)) {
       await interaction.followUp({
         content: `Error: Could not access the channel for confirmation.`,
         ephemeral: true
@@ -268,31 +266,37 @@ async function handleRemovePlayer(interaction: ChatInputCommandInteraction): Pro
       return;
     }
     
-    try {
-      const collected = await channel.awaitMessages({ 
-        filter, 
-        max: 1, 
-        time: 30000, 
-        errors: ['time'] 
-      });
+    // Get the text channel and type it correctly
+    const channel = interaction.channel as TextChannel;
+    
+    // Create a message collector
+    const filter = (m: any) => m.author.id === interaction.user.id && m.content.toLowerCase() === 'confirm';
+    const collector = channel.createMessageCollector({ 
+      filter, 
+      max: 1, 
+      time: 30000 // 30 seconds timeout
+    });
+    
+    collector.on('collect', async () => {
+      // Delete the player from the database
+      await db.delete(players)
+        .where(eq(players.discordId, discordUser.id));
       
-      if (collected.size > 0) {
-        // Delete the player from the database
-        await db.delete(players)
-          .where(eq(players.discordId, discordUser.id));
-        
+      await interaction.followUp({
+        content: `${existingPlayer.username} has been removed from the roster.`,
+        ephemeral: true
+      });
+    });
+    
+    collector.on('end', async (collected) => {
+      // If no messages were collected, it timed out
+      if (collected.size === 0) {
         await interaction.followUp({
-          content: `${existingPlayer.username} has been removed from the roster.`,
+          content: `Removal cancelled: Confirmation timeout.`,
           ephemeral: true
         });
       }
-    } catch (e) {
-      // Timeout occurred
-      await interaction.followUp({
-        content: `Removal cancelled: Confirmation timeout.`,
-        ephemeral: true
-      });
-    }
+    });
     
   } catch (error) {
     console.error('Error removing player from roster:', error);

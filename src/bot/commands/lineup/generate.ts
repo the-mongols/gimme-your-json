@@ -1,6 +1,8 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import type { ChatInputCommandInteraction, GuildMember } from 'discord.js';
-import { generateOptimalLineup, TeamComposition } from '../../../services/optimizer/lineup.js';
+// Use the function import and a separate type-only import
+import { generateOptimalLineup } from '../../../services/optimizer/lineup.js';
+import type { TeamComposition, OptimalLineupResult, ShipWithScore } from '../../../services/optimizer/lineup.js';
 
 export default {
   category: 'lineup',
@@ -110,12 +112,12 @@ function getCompositionForMode(mode: string): TeamComposition {
   }
 }
 
-function createLineupEmbed(result: any, mode: string, channelName: string): EmbedBuilder {
+function createLineupEmbed(result: OptimalLineupResult, mode: string, channelName: string): EmbedBuilder {
   const { ships, totalScore, averageTier, composition } = result;
   
   // Sort ships by type for display (DD, CA, BB, CV)
   const shipTypeOrder: Record<string, number> = { "DD": 1, "CA": 2, "BB": 3, "CV": 4, "SS": 5 };
-  ships.sort((a: any, b: any) => 
+  const sortedShips = [...ships].sort((a, b) => 
     (shipTypeOrder[a.type] || 99) - (shipTypeOrder[b.type] || 99)
   );
   
@@ -131,8 +133,8 @@ function createLineupEmbed(result: any, mode: string, channelName: string): Embe
     .setTimestamp();
   
   // Group ships by type for cleaner display
-  const shipsByType: Record<string, any[]> = {};
-  for (const ship of ships) {
+  const shipsByType: Record<string, ShipWithScore[]> = {};
+  for (const ship of sortedShips) {
     if (!shipsByType[ship.type]) {
       shipsByType[ship.type] = [];
     }
@@ -152,7 +154,7 @@ function createLineupEmbed(result: any, mode: string, channelName: string): Embe
     
     embed.addFields({ 
       name: `${getShipTypeName(type)} (${typeShips.length})`, 
-      value: typeData 
+      value: typeData || 'No ships' 
     });
   }
   
