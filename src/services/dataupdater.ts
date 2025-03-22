@@ -2,6 +2,8 @@ import { db } from "../database/db.js";
 import { players, ships, statHistory } from "../database/drizzle/schema.js";
 import { eq } from "drizzle-orm";
 import { fetchPlayerById, fetchPlayerShips, fetchShipInfo } from "./wargaming/api.js";
+// In src/services/dataupdater.ts
+import { calculateShipScore as calculateScoreFromMetrics } from "./metrics/calculator.js";
 
 // Define the shape of ship data
 interface ShipData {
@@ -67,7 +69,7 @@ async function updatePlayerDataInDb(accountId: string) {
       const damageAvg = shipData.pvp.damage_dealt / battles;
       
       // Calculate ship score (implementation in metrics/calculator.js)
-      const shipScore = calculateShipScore({
+      const shipScore = calculateScoreFromMetrics({
         shipType: shipInfo.type,
         tier: shipInfo.tier,
         winRate,

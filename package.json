@@ -4,10 +4,10 @@
   "type": "module",
   "scripts": {
     "start": "bun run index.ts",
-    "deploy": "bun run deploy-commands.ts",
-    "deployglobal": "bun run global-deploy-commands.ts --global",
-    "clearguild": "bun run clear-commands.ts",
-    "clearglobal": "bun run clear-commands.ts --global"
+    "deploy": "bun run src/bot/commands/registration/register-commands.ts",
+    "deployglobal": "bun run src/bot/commands/registration/register-commands.ts --global",
+    "clearguild": "bun run src/bot/commands/registration/clear-commands.ts",
+    "clearglobal": "bun run src/bot/commands/registration/clear-commands.ts --global"
   },
   "private": true,
   "devDependencies": {

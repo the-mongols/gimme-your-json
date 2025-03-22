@@ -1,14 +1,15 @@
-import { db } from "../../database/db.js";
-import { clan_battles, clan_battle_teams, clan_battle_players } from "../../database/drizzle/schema";
-
+import { db } from "../../database/db.ts";
+import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../database/drizzle/schema.ts";
 import { eq, and, inArray, gte, lte, desc } from "drizzle-orm";
+import { Logger } from "../../utils/logger.ts";
+import { Config } from "../../utils/config.ts";
 
 // API URLs
 const TEAM1_API_URL = "https://clans.worldofwarships.com/api/ladder/battles/?team=1";
 const TEAM2_API_URL = "https://clans.worldofwarships.com/api/ladder/battles/?team=2";
 
-// PN31 clan information - adjust as needed
-const PN31_CLAN_TAG = "PN31"; // The clan tag to look for
+// PN31 clan information
+const PN31_CLAN_TAG = Config.clan.tag || "PN31";
 
 // Interface for the battle data structure
 interface Battle {
@@ -73,10 +74,10 @@ export async function fetchClanBattlesData(): Promise<{
   pn31Players: number;
 }> {
   try {
-    console.log("Fetching clan battles data...");
+    Logger.info("Fetching clan battles data...");
     
     // Get the authentication cookies from environment variables
-    const wowsCookies = process.env.WOWS_COOKIES;
+    const wowsCookies = Config.wargaming.cookies;
     
     if (!wowsCookies) {
       throw new Error("WOWS_COOKIES environment variable is not set");
@@ -120,7 +121,7 @@ export async function fetchClanBattlesData(): Promise<{
       }
     }
     
-    console.log(`Found ${uniqueBattles.length} unique battles`);
+    Logger.info(`Found ${uniqueBattles.length} unique battles`);
     
     // Process and store battles
     let newBattlesCount = 0;
@@ -130,8 +131,8 @@ export async function fetchClanBattlesData(): Promise<{
       // Check if battle already exists in database
       const battleIdStr = battle.id.toString();
       const existingBattle = await db.select()
-        .from(clan_battles)
-        .where(eq(clan_battles.id, battleIdStr))
+        .from(clanBattles)
+        .where(eq(clanBattles.id, battleIdStr))
         .get();
         
       if (existingBattle) {
@@ -141,49 +142,49 @@ export async function fetchClanBattlesData(): Promise<{
       newBattlesCount++;
       
       // Insert battle data
-      await db.insert(clan_battles).values({
+      await db.insert(clanBattles).values({
         id: battleIdStr,
-        cluster_id: battle.cluster_id,
-        finished_at: battle.finished_at,
+        clusterId: battle.cluster_id,
+        finishedAt: battle.finished_at,
         realm: battle.realm,
-        season_number: battle.season_number,
-        map_id: battle.map_id,
-        map_name: battle.map.name,
-        arena_id: battle.arena_id,
-        created_at: Date.now()
+        seasonNumber: battle.season_number,
+        mapId: battle.map_id,
+        mapName: battle.map.name,
+        arenaId: battle.arena_id,
+        createdAt: Date.now()
       });
       
       // Process teams
       for (const team of battle.teams) {
         // Insert team data
-        await db.insert(clan_battle_teams).values({
-          battle_id: battleIdStr,
-          team_number: team.team_number ?? 0,
+        await db.insert(clanBattleTeams).values({
+          battleId: battleIdStr,
+          teamNumber: team.team_number ?? 0,
           result: team.result,
           league: team.league ?? null,
           division: team.division ?? null,
-          division_rating: team.division_rating ?? null,
-          rating_delta: team.rating_delta ?? null,
-          clan_id: team.claninfo?.id ?? null,
-          clan_tag: team.claninfo?.tag ?? null,
-          clan_name: team.claninfo?.name ?? null
+          divisionRating: team.division_rating ?? null,
+          ratingDelta: team.rating_delta ?? null,
+          clanId: team.claninfo?.id ?? null,
+          clanTag: team.claninfo?.tag ?? null,
+          clanName: team.claninfo?.name ?? null
         });
         
         // Get the last inserted team
         const teams = await db.select()
-          .from(clan_battle_teams)
+          .from(clanBattleTeams)
           .where(and(
-            eq(clan_battle_teams.battle_id, battleIdStr),
+            eq(clanBattleTeams.battleId, battleIdStr),
             team.team_number !== undefined 
-              ? eq(clan_battle_teams.team_number, team.team_number) 
+              ? eq(clanBattleTeams.teamNumber, team.team_number) 
               : undefined
           ))
-          .orderBy(desc(clan_battle_teams.id))
+          .orderBy(desc(clanBattleTeams.id))
           .limit(1)
           .all();
         
         if (teams.length === 0) {
-          console.error("Failed to retrieve inserted team");
+          Logger.error("Failed to retrieve inserted team");
           continue;
         }
         
@@ -198,22 +199,22 @@ export async function fetchClanBattlesData(): Promise<{
             pn31PlayersCount++;
           }
           
-          await db.insert(clan_battle_players).values({
-            battle_id: battleIdStr,
-            team_id: latestTeam.id,
-            player_id: player.spa_id.toString(),
-            player_name: player.nickname,
+          await db.insert(clanBattlePlayers).values({
+            battleId: battleIdStr,
+            teamId: latestTeam.id,
+            playerId: player.spa_id.toString(),
+            playerName: player.nickname,
             survived: player.survived ? 1 : 0,
-            ship_id: player.vehicle_id.toString(),
-            ship_name: player.ship.name,
-            ship_level: player.ship.level,
-            is_pn31: isPN31
+            shipId: player.vehicle_id.toString(),
+            shipName: player.ship.name,
+            shipLevel: player.ship.level,
+            isPN31: isPN31
           });
         }
       }
     }
     
-    console.log(`Processed ${uniqueBattles.length} battles, ${newBattlesCount} new battles, found ${pn31PlayersCount} PN31 player entries`);
+    Logger.info(`Processed ${uniqueBattles.length} battles, ${newBattlesCount} new battles, found ${pn31PlayersCount} PN31 player entries`);
     
     return {
       processed: uniqueBattles.length,
@@ -221,7 +222,7 @@ export async function fetchClanBattlesData(): Promise<{
       pn31Players: pn31PlayersCount
     };
   } catch (error) {
-    console.error("Error fetching clan battles data:", error);
+    Logger.error("Error fetching clan battles data:", error);
     throw error;
   }
 }
@@ -239,11 +240,11 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     
     // Query battles in the date range
     const battles = await db.select()
-      .from(clan_battles)
+      .from(clanBattles)
       .where(
         and(
-          gte(clan_battles.finished_at, startStr),
-          lte(clan_battles.finished_at, endStr)
+          gte(clanBattles.finishedAt, startStr),
+          lte(clanBattles.finishedAt, endStr)
         )
       )
       .all();
@@ -252,11 +253,11 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     
     // Get PN31 player data
     const playerData = await db.select()
-      .from(clan_battle_players)
+      .from(clanBattlePlayers)
       .where(
         and(
-          inArray(clan_battle_players.battle_id, battleIds),
-          eq(clan_battle_players.is_pn31, 1)
+          inArray(clanBattlePlayers.battleId, battleIds),
+          eq(clanBattlePlayers.isPN31, 1)
         )
       )
       .all();
@@ -274,20 +275,20 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     }> = {};
     
     for (const entry of playerData) {
-      if (!entry.player_id) continue;
+      if (!entry.playerId) continue;
       
       // Get team data to determine if it's a win
       const team = await db.select()
-        .from(clan_battle_teams)
-        .where(eq(clan_battle_teams.id, entry.team_id))
+        .from(clanBattleTeams)
+        .where(eq(clanBattleTeams.id, entry.teamId))
         .get();
       
       const isWin = team?.result === "win";
       
-      if (!playerStats[entry.player_id]) {
-        playerStats[entry.player_id] = {
-          playerId: entry.player_id,
-          playerName: entry.player_name || "Unknown",
+      if (!playerStats[entry.playerId]) {
+        playerStats[entry.playerId] = {
+          playerId: entry.playerId,
+          playerName: entry.playerName || "Unknown",
           battles: 0,
           wins: 0,
           survived: 0,
@@ -297,13 +298,13 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
         };
       }
       
-      const stats = playerStats[entry.player_id];
+      const stats = playerStats[entry.playerId];
       stats.battles++;
       if (isWin) stats.wins++;
       if (entry.survived === 1) stats.survived++;
       
       // Track ship usage
-      const shipName = entry.ship_name || "Unknown Ship";
+      const shipName = entry.shipName || "Unknown Ship";
       if (!stats.shipUsage[shipName]) {
         stats.shipUsage[shipName] = 0;
       }
@@ -319,7 +320,7 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     
     return Object.values(playerStats);
   } catch (error) {
-    console.error("Error getting PN31 player stats:", error);
+    Logger.error("Error getting PN31 player stats:", error);
     throw error;
   }
 }

@@ -78,12 +78,12 @@ export async function generateOptimalLineup(
     // Add player names and ensure all values are properly handled
     const shipsWithPlayerNames: ShipWithScore[] = availableShips.map(ship => ({
       ...ship,
-      playerName: playerMap[ship.playerId] || 'Unknown',
+      playerName: playerMap[ship.playerId] ?? 'Unknown',
       // Ensure values are never null (fix for the type incompatibility)
-      shipScore: ship.shipScore || 0,
-      winRate: ship.winRate || 0, 
-      survivalRate: ship.survivalRate || 0,
-      damageAvg: ship.damageAvg || 0
+      shipScore: ship.shipScore ?? 0,
+      winRate: ship.winRate ?? 0, 
+      survivalRate: ship.survivalRate ?? 0,
+      damageAvg: ship.damageAvg ?? 0
     }));
     
     // 3. Run the optimization algorithm
@@ -153,11 +153,11 @@ function greedyTeamOptimization(
     if (usedPlayers.has(ship.playerId)) continue;
     
     // Skip if ship type quota is filled
-    if (typeCount[ship.type] >= (composition.requiredTypes[ship.type] || 0)) continue;
+    if (typeCount[ship.type] >= (composition.requiredTypes[ship.type] ?? 0)) continue;
     
     // Skip if tier spread constraint would be violated
     if (selectedShips.length > 0) {
-      const tierSpread = composition.maxTierSpread || 2;
+      const tierSpread = composition.maxTierSpread ?? 2;
       const tiers = selectedShips.map(s => s.tier);
       const minTier = Math.min(...tiers);
       const maxTier = Math.max(...tiers);
@@ -168,7 +168,7 @@ function greedyTeamOptimization(
     // If we get here, ship can be added
     selectedShips.push(ship);
     usedPlayers.add(ship.playerId);
-    typeCount[ship.type] = (typeCount[ship.type] || 0) + 1;
+    typeCount[ship.type] = (typeCount[ship.type] ?? 0) + 1;
     
     // Check if team is complete
     const totalRequired = Object.values(composition.requiredTypes).reduce((a, b) => a + b, 0);
@@ -184,7 +184,7 @@ function greedyTeamOptimization(
   // Count actual composition
   const actualComposition: Record<string, number> = {};
   for (const ship of selectedShips) {
-    actualComposition[ship.type] = (actualComposition[ship.type] || 0) + 1;
+    actualComposition[ship.type] = (actualComposition[ship.type] ?? 0) + 1;
   }
   
   return { 
