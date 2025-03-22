@@ -87,3 +87,55 @@ export const lineupShips = sqliteTable(
     pk: primaryKey({ columns: [table.lineupId, table.shipId] })
   })
 );
+
+// Movies table (from earlier migration)
+export const movies = sqliteTable("movies", {
+  id: integer("id").primaryKey(),
+  title: text("title"),
+  releaseYear: integer("release_year")
+});
+
+// Clan battles data table
+export const clan_battles = sqliteTable("clan_battles", {
+  id: text("id").primaryKey(),                  // Battle ID
+  cluster_id: integer("cluster_id"),            // Cluster ID
+  finished_at: text("finished_at"),             // Timestamp
+  realm: text("realm"),                         // Server region
+  season_number: integer("season_number"),      // Season number
+  map_id: integer("map_id"),                    // Map ID
+  map_name: text("map_name"),                   // Map name
+  arena_id: integer("arena_id"),                // Arena ID
+  created_at: integer("created_at"),            // When this record was created
+});
+
+// Team data for clan battles
+export const clan_battle_teams = sqliteTable("clan_battle_teams", {
+  id: integer("id", { mode: "number" }).primaryKey({ autoIncrement: true }),
+  battle_id: text("battle_id").notNull()
+    .references(() => clan_battles.id, { onDelete: "cascade" }),
+  team_number: integer("team_number"),          // 1 or 2
+  result: text("result"),                       // win or lose
+  league: integer("league"),                    // League number
+  division: integer("division"),                // Division number
+  division_rating: integer("division_rating"),  // Rating
+  rating_delta: integer("rating_delta"),        // Rating change
+  clan_id: integer("clan_id"),                  // Clan ID
+  clan_tag: text("clan_tag"),                   // Clan tag
+  clan_name: text("clan_name"),                 // Clan name
+});
+
+// Player data for clan battles
+export const clan_battle_players = sqliteTable("clan_battle_players", {
+  id: integer("id", { mode: "number" }).primaryKey({ autoIncrement: true }),
+  battle_id: text("battle_id").notNull()
+    .references(() => clan_battles.id, { onDelete: "cascade" }),
+  team_id: integer("team_id", { mode: "number" }).notNull()
+    .references(() => clan_battle_teams.id, { onDelete: "cascade" }),
+  player_id: text("player_id"),                 // Player SPA ID
+  player_name: text("player_name"),             // Player nickname
+  survived: integer("survived"),                // 0 or 1
+  ship_id: text("ship_id"),                     // Vehicle ID
+  ship_name: text("ship_name"),                 // Ship name
+  ship_level: integer("ship_level"),            // Ship tier
+  is_pn31: integer("is_pn31"),                  // 0 or 1 flag to indicate PN31 players
+});

@@ -1,8 +1,9 @@
 import { updateAllPlayersData } from '../services/wargaming/api.js';
 import { uploadDataToSheet } from '../services/sheets/client.js';
+import { fetchClanBattlesData } from '../services/wargaming/clanbattles.js';
 
 // Configuration for scheduled updates
-const UPDATE_HOUR = parseInt(process.env.UPDATE_HOUR || '0', 10);
+const UPDATE_HOUR = parseInt(process.env.UPDATE_HOUR || '0', 10);  // Default to midnight
 const UPDATE_MINUTE = parseInt(process.env.UPDATE_MINUTE || '0', 10);
 
 export async function setupScheduler() {
@@ -69,6 +70,11 @@ export async function runScheduledUpdate() {
     const updateResults = await updateAllPlayersData();
     console.log(`Player data update completed: ${updateResults.success} succeeded, ${updateResults.failed} failed`);
     
+    // Step 1.5: Update clan battles data
+    console.log('Updating clan battles data...');
+    const clanBattlesResults = await fetchClanBattlesData();
+    console.log(`Clan battles data update completed: processed ${clanBattlesResults.processed} battles, ${clanBattlesResults.newBattles} new, ${clanBattlesResults.pn31Players} PN31 player entries`);
+    
     // Step 2: Upload data to Google Sheets
     console.log('Uploading data to Google Sheets...');
     await uploadDataToSheet();
@@ -81,7 +87,8 @@ export async function runScheduledUpdate() {
     return {
       status: 'success',
       duration,
-      playerUpdates: updateResults
+      playerUpdates: updateResults,
+      clanBattles: clanBattlesResults
     };
   } catch (error) {
     console.error('Error during scheduled update:', error);
