@@ -1,6 +1,7 @@
 // src/services/wargaming/client.ts
-import { Config } from '../../utils/config.ts';
-import { Logger } from '../../utils/logger.ts';
+import { Config } from '../../utils/config.js';
+import { Logger } from '../../utils/logger.js';
+import type { ClanConfig } from '../../config/clans.js';
 
 /**
  * Wargaming API Client class for making API requests
@@ -9,14 +10,22 @@ export class WargamingApiClient {
   private apiKey: string;
   private region: string;
   private apiBase: string;
+  private clan?: ClanConfig;
   
   /**
    * Create a new Wargaming API client
-   * @param region API region (na, eu, asia, ru)
+   * @param clan Optional clan configuration - if provided, will use clan-specific settings
+   * @param region API region (na, eu, asia, ru) - overrides clan.region if provided
    */
-  constructor(region?: string) {
+  constructor(clan?: ClanConfig, region?: string) {
     this.apiKey = Config.wargaming.apiKey || '';
-    this.region = region || Config.wargaming.region || 'na';
+    this.clan = clan;
+    
+    // Use the following order for region: 
+    // 1. Provided region parameter 
+    // 2. Clan's region setting 
+    // 3. Config default region
+    this.region = region || clan?.region || Config.wargaming.region || 'na';
     
     // Determine API base URL from region
     const apiBases: Record<string, string> = {
@@ -77,16 +86,22 @@ export class WargamingApiClient {
   
   /**
    * Clan Battles API - requires authentication cookies
+   * @param team Team number (1 or 2)
+   * @returns Clan battles data
    */
   async getClanBattles(team: 1 | 2 = 1): Promise<unknown> {
     const url = `https://clans.worldofwarships.com/api/ladder/battles/?team=${team}`;
-    const cookies = Config.wargaming.cookies;
+    
+    // Use clan-specific cookies if available, otherwise use global config
+    const cookies = this.clan?.cookies || Config.wargaming.cookies;
     
     if (!cookies) {
-      throw new Error('No WOWS_COOKIES provided in environment variables');
+      throw new Error(`No cookies available for clan ${this.clan?.tag || 'unknown'}`);
     }
     
     try {
+      Logger.debug(`Fetching clan battles for clan ${this.clan?.tag || 'unknown'}, team ${team}`);
+      
       const response = await fetch(url, {
         headers: {
           'Cookie': cookies,
@@ -100,7 +115,7 @@ export class WargamingApiClient {
       
       return await response.json();
     } catch (error) {
-      Logger.error('Failed to fetch clan battles data', error);
+      Logger.error(`Failed to fetch clan battles data for clan ${this.clan?.tag || 'unknown'}`, error);
       throw error;
     }
   }
@@ -139,7 +154,34 @@ export class WargamingApiClient {
     const data = await this.request<Record<string, any>>('encyclopedia/ships', { ship_id: shipId });
     return data[shipId];
   }
+  
+  /**
+   * Get clan details
+   * @param clanId Clan ID
+   */
+  async getClanInfo(clanId: number): Promise<any> {
+    const data = await this.request<Record<string, any>>('clans/info', { clan_id: clanId });
+    return data[clanId.toString()];
+  }
+  
+  /**
+   * Search for clan by tag
+   * @param clanTag Clan tag to search for
+   */
+  async findClanByTag(clanTag: string): Promise<any[]> {
+    return this.request<any[]>('clans/list', { search: clanTag });
+  }
 }
 
-// Export singleton instance for convenience
-export const wgApi = new WargamingApiClient();
+/**
+ * Create a WargamingApiClient instance for a specific clan
+ * @param clanTag Clan tag (e.g., "PN31")
+ * @returns API client for the specified clan
+ */
+export function getApiClientForClan(clanTag: string): WargamingApiClient {
+  const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+  return new WargamingApiClient(clan);
+}
+
+// Export singleton instance for convenience (uses default clan)
+export const wgApi = new WargamingApiClient(Config.defaultClan);

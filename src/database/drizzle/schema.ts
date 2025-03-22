@@ -1,27 +1,30 @@
-// src/database/drizzle/schema.ts (comprehensive update)
-
+// src/database/drizzle/schema.ts
 import { sqliteTable, text, real, integer, primaryKey } from "drizzle-orm/sqlite-core";
 
-// Player table definition
+// Player table definition - now with clan_id
 export const players = sqliteTable("players", {
-  id: text("id").primaryKey(),                  // WG account ID
-  username: text("username").notNull(),         // In-game name
-  discordId: text("discord_id").notNull(),      // Discord user ID
-  clanId: text("clan_id"),                      // Optional clan ID
-  clanTag: text("clan_tag"),                    // Optional clan tag
+  id: text("id").notNull(),               // WG account ID
+  clanId: text("clan_id").notNull(),      // Clan ID for multi-clan support
+  username: text("username").notNull(),   // In-game name
+  discordId: text("discord_id").notNull(),// Discord user ID
+  wgClanId: text("wg_clan_id"),           // Optional actual clan ID from WG
+  clanTag: text("clan_tag"),              // Optional clan tag from WG
   tierAverages: text("tier_averages", { mode: "json" }), // JSON of tier averages
-  lastUpdated: integer("last_updated"),         // Timestamp
-});
+  lastUpdated: integer("last_updated"),   // Timestamp
+}, (table) => ({
+  // Composite primary key of player ID and clan ID
+  pk: primaryKey({ columns: [table.id, table.clanId] })
+}));
 
-// Ship table definition
+// Ship table definition - modified to include clan_id
 export const ships = sqliteTable("ships", {
-  id: text("id").primaryKey(),                  // Ship ID
-  playerId: text("player_id").notNull()         // Player relationship
-    .references(() => players.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),                 // Ship name
-  tier: integer("tier").notNull(),              // Ship tier
-  type: text("type").notNull(),                 // DD, CA, BB, CV
-  nation: text("nation"),                       // Ship nation
+  id: text("id").notNull(),                  // Ship ID
+  playerId: text("player_id").notNull(),     // Player ID
+  clanId: text("clan_id").notNull(),         // Clan ID for multi-clan support
+  name: text("name").notNull(),              // Ship name
+  tier: integer("tier").notNull(),           // Ship tier
+  type: text("type").notNull(),              // DD, CA, BB, CV
+  nation: text("nation"),                    // Ship nation
 
   // Core stats
   battles: integer("battles").notNull(),
@@ -35,41 +38,51 @@ export const ships = sqliteTable("ships", {
   fragAvg: real("frag_avg"),
   xpAvg: real("xp_avg"),
   
-  // Your compound metrics
-  shipScore: real("ship_score"),                // Primary WAR-like metric
-  expectedDamage: real("expected_damage"),      // Expected damage for this ship
-  damageRatio: real("damage_ratio"),            // Player damage / expected
+  // Compound metrics
+  shipScore: real("ship_score"),             // Primary WAR-like metric
+  expectedDamage: real("expected_damage"),   // Expected damage for this ship
+  damageRatio: real("damage_ratio"),         // Player damage / expected
   
   // Ship metadata
-  lastPlayed: integer("last_played"),           // When ship was last played
-  lastUpdated: integer("last_updated"),         // When stats were updated
-});
+  lastPlayed: integer("last_played"),        // When ship was last played
+  lastUpdated: integer("last_updated"),      // When stats were updated
+}, (table) => ({
+  // Composite primary key
+  pk: primaryKey({ columns: [table.id, table.playerId, table.clanId] }),
+  // Reference to players table with cascade delete
+  playerRef: primaryKey({ 
+    columns: [table.playerId, table.clanId],
+    name: "fk_player_ref" 
+  })
+}));
 
-// Track history for reports and trends
+// Track history for reports and trends - with clan_id
 export const statHistory = sqliteTable(
   "stat_history", 
   {
-    shipId: text("ship_id").notNull()
-      .references(() => ships.id, { onDelete: "cascade" }),
-    date: integer("date").notNull(),            // Timestamp
+    shipId: text("ship_id").notNull(),
+    playerId: text("player_id").notNull(),
+    clanId: text("clan_id").notNull(),       // Clan ID for multi-clan support
+    date: integer("date").notNull(),         // Timestamp
     battles: integer("battles").notNull(),
     winRate: real("win_rate"),
     damageAvg: real("damage_avg"),
     shipScore: real("ship_score"),
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.shipId, table.date] })
+    pk: primaryKey({ columns: [table.shipId, table.playerId, table.clanId, table.date] })
   })
 );
 
-// Store optimized lineup configurations
+// Store optimized lineup configurations - with clan_id
 export const lineups = sqliteTable("lineups", {
   id: integer("id", { mode: "number" }).primaryKey({ autoIncrement: true }),
+  clanId: text("clan_id").notNull(),         // Clan ID for multi-clan support
   name: text("name").notNull(),
   description: text("description"),
   createdAt: integer("created_at").notNull(),
-  totalScore: real("total_score"),              // Calculated team score
-  config: text("config", { mode: "json" }).notNull(),  // Lineup configuration
+  totalScore: real("total_score"),           // Calculated team score
+  config: text("config", { mode: "json" }).notNull(), // Lineup configuration
 });
 
 // Track which ships are used in which lineups
@@ -78,12 +91,13 @@ export const lineupShips = sqliteTable(
   {
     lineupId: integer("lineup_id").notNull()
       .references(() => lineups.id, { onDelete: "cascade" }),
-    shipId: text("ship_id").notNull()
-      .references(() => ships.id, { onDelete: "cascade" }),
-    position: text("position"),                 // Position in lineup (e.g. "DD1")
+    shipId: text("ship_id").notNull(),
+    playerId: text("player_id").notNull(),
+    clanId: text("clan_id").notNull(),        // Clan ID for multi-clan support
+    position: text("position"),               // Position in lineup (e.g. "DD1")
   },
   (table) => ({
-    pk: primaryKey({ columns: [table.lineupId, table.shipId] })
+    pk: primaryKey({ columns: [table.lineupId, table.shipId, table.playerId, table.clanId] })
   })
 );
 
@@ -94,55 +108,57 @@ export const movies = sqliteTable("movies", {
   releaseYear: integer("release_year")
 });
 
-// Clan battles tables
+// Clan battles tables - already clan-specific by design
 export const clanBattles = sqliteTable("clan_battles", {
-  id: text("id").primaryKey(),                  // Battle ID
-  clusterId: integer("cluster_id"),             // Cluster ID
-  finishedAt: text("finished_at"),              // Timestamp
-  realm: text("realm"),                         // Server region
-  seasonNumber: integer("season_number"),       // Season number
-  mapId: integer("map_id"),                     // Map ID
-  mapName: text("map_name"),                    // Map name
-  arenaId: integer("arena_id"),                 // Arena ID
-  createdAt: integer("created_at"),             // When this record was created
-});
+  id: text("id").notNull(),
+  clanId: text("clan_id").notNull(),          // Which clan this battle belongs to
+  clusterId: integer("cluster_id"),
+  finishedAt: text("finished_at"),
+  realm: text("realm"),
+  seasonNumber: integer("season_number"),
+  mapId: integer("map_id"),
+  mapName: text("map_name"),
+  arenaId: integer("arena_id"),
+  createdAt: integer("created_at"),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.id, table.clanId] })
+}));
 
 // Team data for clan battles
 export const clanBattleTeams = sqliteTable("clan_battle_teams", {
   id: integer("id", { mode: "number" }).primaryKey({ autoIncrement: true }),
-  battleId: text("battle_id").notNull()
-    .references(() => clanBattles.id, { onDelete: "cascade" }),
-  teamNumber: integer("team_number"),          // 1 or 2
-  result: text("result"),                       // win or lose
-  league: integer("league"),                    // League number
-  division: integer("division"),                // Division number
-  divisionRating: integer("division_rating"),   // Rating
-  ratingDelta: integer("rating_delta"),         // Rating change
-  clanId: integer("clan_id"),                   // Clan ID
-  clanTag: text("clan_tag"),                    // Clan tag
-  clanName: text("clan_name"),                  // Clan name
+  battleId: text("battle_id").notNull(),
+  clanId: text("clan_id").notNull(),          // Which clan this team belongs to
+  teamNumber: integer("team_number"),
+  result: text("result"),
+  league: integer("league"),
+  division: integer("division"),
+  divisionRating: integer("division_rating"),
+  ratingDelta: integer("rating_delta"),
+  wgClanId: integer("wg_clan_id"),            // Renamed from clanId to wgClanId for clarity
+  clanTag: text("clan_tag"),
+  clanName: text("clan_name"),
 });
 
 // Player data for clan battles
 export const clanBattlePlayers = sqliteTable("clan_battle_players", {
   id: integer("id", { mode: "number" }).primaryKey({ autoIncrement: true }),
-  battleId: text("battle_id").notNull()
-    .references(() => clanBattles.id, { onDelete: "cascade" }),
-  teamId: integer("team_id", { mode: "number" }).notNull()
-    .references(() => clanBattleTeams.id, { onDelete: "cascade" }),
-  playerId: text("player_id"),                  // Player SPA ID
-  playerName: text("player_name"),              // Player nickname
-  survived: integer("survived"),                // 0 or 1
-  shipId: text("ship_id"),                      // Vehicle ID
-  shipName: text("ship_name"),                  // Ship name
-  shipLevel: integer("ship_level"),             // Ship tier
-  isPN31: integer("is_pn31"),                   // 0 or 1 flag to indicate PN31 players
+  battleId: text("battle_id").notNull(),
+  clanId: text("clan_id").notNull(),           // Which clan this player entry belongs to
+  teamId: integer("team_id", { mode: "number" }).notNull(),
+  playerId: text("player_id"),
+  playerName: text("player_name"),
+  survived: integer("survived"),
+  shipId: text("ship_id"),
+  shipName: text("ship_name"),
+  shipLevel: integer("ship_level"),
+  isClanMember: integer("is_clan_member"),     // Renamed from isPN31 to be more generic
 });
 
-// Player statistics (separate from payers table to store clan battles stats)
+// Player statistics - with clan_id
 export const playerStats = sqliteTable("player_stats", {
-  playerId: text("player_id").primaryKey()
-    .references(() => players.id, { onDelete: "cascade" }),
+  playerId: text("player_id").notNull(),
+  clanId: text("clan_id").notNull(),           // Clan ID for multi-clan support
   playerName: text("player_name").notNull(),
   totalBattles: integer("total_battles").notNull().default(0),
   victories: integer("victories").notNull().default(0),
@@ -152,4 +168,6 @@ export const playerStats = sqliteTable("player_stats", {
   winRate: real("win_rate").default(0),
   survivalRate: real("survival_rate").default(0),
   lastUpdated: integer("last_updated").notNull().default(0),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.playerId, table.clanId] })
+}));

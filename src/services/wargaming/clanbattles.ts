@@ -1,15 +1,11 @@
-import { db } from "../../database/db.ts";
-import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../database/drizzle/schema.ts";
+// src/services/wargaming/clanbattles.ts
+import { db } from "../../database/db.js";
+import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../database/drizzle/schema.js";
 import { eq, and, inArray, gte, lte, desc } from "drizzle-orm";
-import { Logger } from "../../utils/logger.ts";
-import { Config } from "../../utils/config.ts";
-
-// API URLs
-const TEAM1_API_URL = "https://clans.worldofwarships.com/api/ladder/battles/?team=1";
-const TEAM2_API_URL = "https://clans.worldofwarships.com/api/ladder/battles/?team=2";
-
-// PN31 clan information
-const PN31_CLAN_TAG = Config.clan.tag || "PN31";
+import { Logger } from "../../utils/logger.js";
+import { Config } from "../../utils/config.js";
+import { wgApi, getApiClientForClan } from "./client.js";
+import type { ClanConfig } from "../../config/clans.js";
 
 // Interface for the battle data structure
 interface Battle {
@@ -67,47 +63,38 @@ interface Player {
   clan_id: number;
 }
 
-// Function to fetch clan battles data
-export async function fetchClanBattlesData(): Promise<{
+/**
+ * Fetch clan battles data for a specific clan
+ * @param clanTag The clan tag to fetch data for (e.g., "PN31")
+ * @returns Statistics about the operation
+ */
+export async function fetchClanBattlesData(clanTag?: string): Promise<{
+  clan: string;
   processed: number;
   newBattles: number;
-  pn31Players: number;
+  clanMemberPlayers: number;
 }> {
+  const clan = clanTag 
+    ? Object.values(Config.clans).find(c => c.tag === clanTag) 
+    : Config.defaultClan;
+    
+  if (!clan) {
+    throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+  }
+  
   try {
-    Logger.info("Fetching clan battles data...");
+    Logger.info(`Fetching clan battles data for ${clan.tag}...`);
     
-    // Get the authentication cookies from environment variables
-    const wowsCookies = Config.wargaming.cookies;
+    // Get API client for this clan
+    const apiClient = getApiClientForClan(clan.tag);
     
-    if (!wowsCookies) {
-      throw new Error("WOWS_COOKIES environment variable is not set");
-    }
-    
-    // Prepare the headers
-    const headers = {
-      'Cookie': wowsCookies,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
-    };
-    
-    // Fetch data for team 1
-    const team1Response = await fetch(TEAM1_API_URL, { headers });
-    if (!team1Response.ok) {
-      throw new Error(`Team 1 API responded with status: ${team1Response.status}`);
-    }
-    
-    // Fetch data for team 2
-    const team2Response = await fetch(TEAM2_API_URL, { headers });
-    if (!team2Response.ok) {
-      throw new Error(`Team 2 API responded with status: ${team2Response.status}`);
-    }
-    
-    // Parse the responses
-    const team1Data = await team1Response.json();
-    const team2Data = await team2Response.json();
+    // Fetch data for team 1 and team 2
+    const team1Data = await apiClient.getClanBattles(1) as Record<string, Battle>;
+    const team2Data = await apiClient.getClanBattles(2) as Record<string, Battle>;
     
     // Process the data
-    const team1Battles = Object.values(team1Data) as Battle[];
-    const team2Battles = Object.values(team2Data) as Battle[];
+    const team1Battles = Object.values(team1Data);
+    const team2Battles = Object.values(team2Data);
     
     // Merge and deduplicate battles
     const allBattles = [...team1Battles, ...team2Battles];
@@ -121,18 +108,21 @@ export async function fetchClanBattlesData(): Promise<{
       }
     }
     
-    Logger.info(`Found ${uniqueBattles.length} unique battles`);
+    Logger.info(`Found ${uniqueBattles.length} unique battles for ${clan.tag}`);
     
     // Process and store battles
     let newBattlesCount = 0;
-    let pn31PlayersCount = 0;
+    let clanMemberPlayersCount = 0;
     
     for (const battle of uniqueBattles) {
       // Check if battle already exists in database
       const battleIdStr = battle.id.toString();
       const existingBattle = await db.select()
         .from(clanBattles)
-        .where(eq(clanBattles.id, battleIdStr))
+        .where(and(
+          eq(clanBattles.id, battleIdStr),
+          eq(clanBattles.clanId, clan.id.toString())
+        ))
         .get();
         
       if (existingBattle) {
@@ -144,6 +134,7 @@ export async function fetchClanBattlesData(): Promise<{
       // Insert battle data
       await db.insert(clanBattles).values({
         id: battleIdStr,
+        clanId: clan.id.toString(),
         clusterId: battle.cluster_id,
         finishedAt: battle.finished_at,
         realm: battle.realm,
@@ -157,79 +148,129 @@ export async function fetchClanBattlesData(): Promise<{
       // Process teams
       for (const team of battle.teams) {
         // Insert team data
-        await db.insert(clanBattleTeams).values({
+        const teamInsert = await db.insert(clanBattleTeams).values({
           battleId: battleIdStr,
+          clanId: clan.id.toString(),
           teamNumber: team.team_number ?? 0,
           result: team.result,
           league: team.league ?? null,
           division: team.division ?? null,
           divisionRating: team.division_rating ?? null,
           ratingDelta: team.rating_delta ?? null,
-          clanId: team.claninfo?.id ?? null,
+          wgClanId: team.claninfo?.id ?? null,
           clanTag: team.claninfo?.tag ?? null,
           clanName: team.claninfo?.name ?? null
-        });
+        }).returning();
         
-        // Get the last inserted team
-        const teams = await db.select()
-          .from(clanBattleTeams)
-          .where(and(
-            eq(clanBattleTeams.battleId, battleIdStr),
-            team.team_number !== undefined 
-              ? eq(clanBattleTeams.teamNumber, team.team_number) 
-              : undefined
-          ))
-          .orderBy(desc(clanBattleTeams.id))
-          .limit(1)
-          .all();
+        const insertedTeam = teamInsert[0];
         
-        if (teams.length === 0) {
-          Logger.error("Failed to retrieve inserted team");
+        if (!insertedTeam || !insertedTeam.id) {
+          Logger.error(`Failed to retrieve inserted team for battle ${battleIdStr}`);
           continue;
         }
         
-        const latestTeam = teams[0];
-        
         // Process players
         for (const player of team.players) {
-          // Check if player is from PN31
-          const isPN31 = team.claninfo?.tag === PN31_CLAN_TAG ? 1 : 0;
+          // Check if player is from this clan
+          const isClanMember = (team.claninfo?.tag === clan.tag) ? 1 : 0;
           
-          if (isPN31 === 1) {
-            pn31PlayersCount++;
+          if (isClanMember === 1) {
+            clanMemberPlayersCount++;
           }
           
           await db.insert(clanBattlePlayers).values({
             battleId: battleIdStr,
-            teamId: latestTeam.id,
+            clanId: clan.id.toString(),
+            teamId: insertedTeam.id,
             playerId: player.spa_id.toString(),
             playerName: player.nickname,
             survived: player.survived ? 1 : 0,
             shipId: player.vehicle_id.toString(),
             shipName: player.ship.name,
             shipLevel: player.ship.level,
-            isPN31: isPN31
+            isClanMember: isClanMember
           });
         }
       }
     }
     
-    Logger.info(`Processed ${uniqueBattles.length} battles, ${newBattlesCount} new battles, found ${pn31PlayersCount} PN31 player entries`);
+    Logger.info(`Processed ${uniqueBattles.length} battles, ${newBattlesCount} new battles, found ${clanMemberPlayersCount} ${clan.tag} player entries`);
     
     return {
+      clan: clan.tag,
       processed: uniqueBattles.length,
       newBattles: newBattlesCount,
-      pn31Players: pn31PlayersCount
+      clanMemberPlayers: clanMemberPlayersCount
     };
   } catch (error) {
-    Logger.error("Error fetching clan battles data:", error);
+    Logger.error(`Error fetching clan battles data for ${clan.tag}:`, error);
     throw error;
   }
 }
 
-// Get PN31 player stats for a given time period
-export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
+/**
+ * Fetch clan battles data for all configured clans
+ * @returns Results for each clan
+ */
+export async function fetchAllClanBattlesData(): Promise<{
+  results: Array<{
+    clan: string;
+    processed: number;
+    newBattles: number;
+    clanMemberPlayers: number;
+  }>;
+  totalProcessed: number;
+  totalNew: number;
+}> {
+  const results = [];
+  let totalProcessed = 0;
+  let totalNew = 0;
+  
+  Logger.info("Fetching clan battles data for all configured clans...");
+  
+  for (const clan of Object.values(Config.clans)) {
+    try {
+      const result = await fetchClanBattlesData(clan.tag);
+      results.push(result);
+      totalProcessed += result.processed;
+      totalNew += result.newBattles;
+    } catch (error) {
+      Logger.error(`Error fetching data for clan ${clan.tag}:`, error);
+      results.push({
+        clan: clan.tag,
+        processed: 0,
+        newBattles: 0,
+        clanMemberPlayers: 0
+      });
+    }
+  }
+  
+  Logger.info(`Completed fetching clan battles data for all clans. Processed ${totalProcessed} battles, ${totalNew} new battles.`);
+  
+  return {
+    results,
+    totalProcessed,
+    totalNew
+  };
+}
+
+/**
+ * Get clan member player stats for a given time period
+ * @param clanTag Clan tag (e.g., "PN31")
+ * @param startDate Optional start date for filtering
+ * @param endDate Optional end date for filtering
+ * @returns Player statistics
+ */
+export async function getClanMemberPlayerStats(clanTag: string, startDate?: Date, endDate?: Date) {
+  const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+  
+  if (!clan) {
+    throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+  }
+  
   try {
+    Logger.info(`Getting player stats for ${clan.tag} members...`);
+    
     // Set default dates if not provided
     const end = endDate || new Date();
     const start = startDate || new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000); // Default to 30 days back
@@ -243,6 +284,7 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
       .from(clanBattles)
       .where(
         and(
+          eq(clanBattles.clanId, clan.id.toString()),
           gte(clanBattles.finishedAt, startStr),
           lte(clanBattles.finishedAt, endStr)
         )
@@ -251,13 +293,19 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     
     const battleIds = battles.map(b => b.id);
     
-    // Get PN31 player data
+    if (battleIds.length === 0) {
+      Logger.info(`No battles found for ${clan.tag} in the specified date range`);
+      return [];
+    }
+    
+    // Get clan member player data
     const playerData = await db.select()
       .from(clanBattlePlayers)
       .where(
         and(
           inArray(clanBattlePlayers.battleId, battleIds),
-          eq(clanBattlePlayers.isPN31, 1)
+          eq(clanBattlePlayers.clanId, clan.id.toString()),
+          eq(clanBattlePlayers.isClanMember, 1)
         )
       )
       .all();
@@ -320,7 +368,7 @@ export async function getPN31PlayerStats(startDate?: Date, endDate?: Date) {
     
     return Object.values(playerStats);
   } catch (error) {
-    Logger.error("Error getting PN31 player stats:", error);
+    Logger.error(`Error getting ${clanTag} player stats:`, error);
     throw error;
   }
 }

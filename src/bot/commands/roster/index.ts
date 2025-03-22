@@ -1,12 +1,212 @@
-// Player roster management commands
+// Import Config
+import { Config } from '../../../utils/config.js';
+
+// Handler for removing a player
+async function handleRemovePlayer(interaction: ChatInputCommandInteraction, clanTag: string): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  
+  try {
+    const discordUser = interaction.options.getUser('discord_user', true);
+    
+    // Get the clan ID
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    if (!clan) {
+      await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
+      return;
+    }
+    
+    // Check if player exists
+    const existingPlayer = await db.select()
+      .from(players)
+      .where(
+        and(
+          eq(players.discordId, discordUser.id),
+          eq(players.clanId, clan.id.toString())
+        )
+      )
+      .get();
+    
+    if (!existingPlayer) {
+      await interaction.editReply(`Error: ${discordUser.tag} is not in the ${clanTag} roster.`);
+      return;
+    }
+    
+    // Request confirmation
+    await interaction.editReply({
+      content: `Are you sure you want to remove ${existingPlayer.username}${existingPlayer.clanTag ? ` [${existingPlayer.clanTag}]` : ''} from the ${clanTag} roster? This will delete ALL their data including ship statistics. Type "confirm" to proceed.`
+    });
+    
+    // Create a message collector for confirmation
+    // Check if the channel is a text channel first
+    if (!interaction.channel || !('createMessageCollector' in interaction.channel)) {
+      await interaction.followUp({
+        content: `Error: Could not access the channel for confirmation.`,
+        ephemeral: true
+      });
+      return;
+    }
+    
+    // Get the text channel and type it correctly
+    const channel = interaction.channel as TextChannel;
+    
+    // Create a message collector
+    const filter = (m: any) => m.author.id === interaction.user.id && m.content.toLowerCase() === 'confirm';
+    const collector = channel.createMessageCollector({ 
+      filter, 
+      max: 1, 
+      time: 30000 // 30 seconds timeout
+    });
+    
+    collector.on('collect', async () => {
+      // Delete the player from the database
+      await db.delete(players)
+        .where(
+          and(
+            eq(players.discordId, discordUser.id),
+            eq(players.clanId, clan.id.toString())
+          )
+        );
+      
+      await interaction.followUp({
+        content: `${existingPlayer.username} has been removed from the ${clanTag} roster.`,
+        ephemeral: true
+      });
+    });
+    
+    collector.on('end', async (collected) => {
+      // If no messages were collected, it timed out
+      if (collected.size === 0) {
+        await interaction.followUp({
+          content: `Removal cancelled: Confirmation timeout.`,
+          ephemeral: true
+        });
+      }
+    });
+  } catch (error) {
+    Logger.error('Error removing player from roster:', error);
+    await interaction.followUp({
+      content: `Failed to remove player: ${(error as Error).message}`,
+      ephemeral: true
+    });
+  }
+}
+
+// Handler for listing the roster
+async function handleListRoster(interaction: ChatInputCommandInteraction, clanTag: string): Promise<void> {
+  await interaction.deferReply({ ephemeral: false });
+  
+  try {
+    const detailed = interaction.options.getBoolean('detailed') || false;
+    
+    // Get the clan ID
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    if (!clan) {
+      await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
+      return;
+    }
+    
+    // Get all players for this clan
+    const allPlayers = await db.select()
+      .from(players)
+      .where(eq(players.clanId, clan.id.toString()))
+      .all();
+    
+    if (allPlayers.length === 0) {
+      await interaction.editReply(`The ${clanTag} roster is currently empty. Add players with \`/roster add clan:${clanTag}\`.`);
+      return;
+    }
+    
+    // Sort by name
+    allPlayers.sort((a, b) => a.username.localeCompare(b.username));
+    
+    // Format response based on detail level
+    let response = `**${clanTag} Roster (${allPlayers.length} players)**\n\n`;
+    
+    if (detailed) {
+      // Detailed list with Discord user mentions and WG IDs
+      for (const player of allPlayers) {
+        const discordMention = `<@${player.discordId}>`;
+        response += `- **${player.username}**${player.clanTag ? ` [${player.clanTag}]` : ''}\n`;
+        response += `  Discord: ${discordMention}\n`;
+        response += `  WG ID: \`${player.id}\`\n`;
+        
+        if (player.lastUpdated) {
+          const date = new Date(player.lastUpdated);
+          response += `  Last Updated: ${date.toLocaleDateString()}\n`;
+        }
+        
+        response += '\n';
+      }
+    } else {
+      // Simple list with just names and clan tags
+      const playerList = allPlayers.map(p => 
+        `- **${p.username}**${p.clanTag ? ` [${p.clanTag}]` : ''}`
+      );
+      response += playerList.join('\n');
+    }
+    
+    await interaction.editReply(response);
+  } catch (error) {
+    Logger.error('Error listing roster:', error);
+    await interaction.editReply(`Failed to list roster: ${(error as Error).message}`);
+  }
+}
+
+// Handler for finding a player
+async function handleFindPlayer(interaction: ChatInputCommandInteraction, clanTag: string): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  
+  try {
+    const searchName = interaction.options.getString('name', true).toLowerCase();
+    
+    // Get the clan ID
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    if (!clan) {
+      await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
+      return;
+    }
+    
+    // Find players with matching names (case insensitive)
+    const allPlayers = await db.select()
+      .from(players)
+      .where(eq(players.clanId, clan.id.toString()))
+      .all();
+      
+    const matchingPlayers = allPlayers.filter(p => 
+      p.username.toLowerCase().includes(searchName)
+    );
+    
+    if (matchingPlayers.length === 0) {
+      await interaction.editReply(`No players found matching "${searchName}" in the ${clanTag} roster.`);
+      return;
+    }
+    
+    // Format response
+    let response = `**Found ${matchingPlayers.length} player(s) matching "${searchName}" in ${clanTag}:**\n\n`;
+    
+    for (const player of matchingPlayers) {
+      const discordMention = `<@${player.discordId}>`;
+      response += `- **${player.username}**${player.clanTag ? ` [${player.clanTag}]` : ''}\n`;
+      response += `  Discord: ${discordMention}\n`;
+      response += `  WG ID: \`${player.id}\`\n\n`;
+    }
+    
+    await interaction.editReply(response);
+  } catch (error) {
+    Logger.error('Error finding player:', error);
+    await interaction.editReply(`Failed to find player: ${(error as Error).message}`);
+  }
+}// src/bot/commands/roster/index.ts
 import { SlashCommandBuilder, PermissionFlagsBits, TextChannel } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
 import { db } from '../../../database/db.js';
 import { players } from '../../../database/drizzle/schema.js';
-import { eq } from 'drizzle-orm';
-
-// Fetch player data from WG API
-import { fetchPlayerByName, fetchPlayerById } from '../../../services/wargaming/api.js';
+import { eq, and } from 'drizzle-orm';
+import { ServerConfigService } from '../../../services/server-config.js';
+import { getApiClientForClan } from '../../../services/wargaming/client.js';
+import { addPlayerToClan, updatePlayerInClan } from '../../../services/dataupdater.js';
+import { Logger } from '../../../utils/logger.js';
+import { getAllClanTags } from '../../../config/clans.js';
 
 // Main roster command with subcommands
 export default {
@@ -16,6 +216,13 @@ export default {
     .setName('roster')
     .setDescription('Manage the player roster')
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles) // Restrict to users with appropriate permissions
+    
+    // Add common clan option to all subcommands
+    .addStringOption(option =>
+      option.setName('clan')
+        .setDescription('Clan to manage (defaults to server default)')
+        .setRequired(false)
+        .addChoices(...getAllClanTags().map(tag => ({ name: tag, value: tag }))))
     
     // Add player subcommand
     .addSubcommand(subcommand =>
@@ -36,7 +243,7 @@ export default {
             .setRequired(false))
         .addStringOption(option =>
           option.setName('clan_tag')
-            .setDescription('Clan tag (optional)')
+            .setDescription('In-game clan tag (optional)')
             .setRequired(false)))
     
     // Edit player subcommand
@@ -58,7 +265,7 @@ export default {
             .setRequired(false))
         .addStringOption(option =>
           option.setName('clan_tag')
-            .setDescription('New clan tag')
+            .setDescription('New in-game clan tag')
             .setRequired(false)))
     
     // Remove player subcommand
@@ -92,19 +299,34 @@ export default {
             .setRequired(true))),
   
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
+    // Ensure we have a guild context
+    if (!interaction.guildId) {
+      await interaction.reply({
+        content: 'This command can only be used in a server.',
+        ephemeral: true
+      });
+      return;
+    }
+    
     const subcommand = interaction.options.getSubcommand();
     
+    // Get the clan to use (from option or server default)
+    const specifiedClanTag = interaction.options.getString('clan');
+    const defaultClanTag = await ServerConfigService.getDefaultClanTag(interaction.guildId);
+    const clanTag = specifiedClanTag || defaultClanTag;
+    
+    // Process subcommands
     switch (subcommand) {
       case 'add':
-        return await handleAddPlayer(interaction);
+        return await handleAddPlayer(interaction, clanTag);
       case 'edit':
-        return await handleEditPlayer(interaction);
+        return await handleEditPlayer(interaction, clanTag);
       case 'remove':
-        return await handleRemovePlayer(interaction);
+        return await handleRemovePlayer(interaction, clanTag);
       case 'list':
-        return await handleListRoster(interaction);
+        return await handleListRoster(interaction, clanTag);
       case 'find':
-        return await handleFindPlayer(interaction);
+        return await handleFindPlayer(interaction, clanTag);
       default:
         await interaction.reply({
           content: 'Unknown subcommand.',
@@ -115,83 +337,57 @@ export default {
 };
 
 // Handler for adding a player
-async function handleAddPlayer(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleAddPlayer(interaction: ChatInputCommandInteraction, clanTag: string): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
   
   try {
     const discordUser = interaction.options.getUser('discord_user', true);
     const playerId = interaction.options.getString('player_id', true);
-    let playerName = interaction.options.getString('player_name') || null;
-    let clanTag = interaction.options.getString('clan_tag') || null;
+    const playerName = interaction.options.getString('player_name');
+    const playerClanTag = interaction.options.getString('clan_tag');
     
-    // Check if player is already in the roster
-    const existingPlayer = await db.select()
-      .from(players)
-      .where(eq(players.discordId, discordUser.id))
-      .get();
+    // Add player to the clan roster
+    await addPlayerToClan(
+      playerId,
+      discordUser.id,
+      clanTag,
+      playerName,
+      playerClanTag
+    );
     
-    if (existingPlayer) {
-      await interaction.editReply(`Error: ${discordUser.tag} is already in the roster with WG ID: ${existingPlayer.id}`);
-      return;
-    }
+    // Get the clan object for the message
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
     
-    // If player name wasn't provided, fetch it from the API
-    if (!playerName) {
-      try {
-        const playerData = await fetchPlayerById(playerId);
-        playerName = playerData.nickname;
-        
-        // If clan info is available and clan tag wasn't manually provided
-        if (playerData.clan && !clanTag) {
-          clanTag = playerData.clan.tag;
-        }
-      } catch (error) {
-        await interaction.editReply(`Warning: Could not fetch player name from WG API. You'll need to provide it manually.`);
-        return;
-      }
-    }
-    
-    if (!playerName) {
-      await interaction.editReply(`Error: Player name is required. Either provide it manually or ensure the WG API is accessible.`);
-      return;
-    }
-    
-    // Insert the player into the database
-    await db.insert(players).values({
-      id: playerId,
-      username: playerName,
-      discordId: discordUser.id,
-      clanTag: clanTag,
-      lastUpdated: Date.now()
-    });
-    
-    await interaction.editReply(`Successfully added ${playerName}${clanTag ? ` [${clanTag}]` : ''} to the roster!`);
+    await interaction.editReply(
+      `Successfully added ${playerName || playerId}${playerClanTag ? ` [${playerClanTag}]` : ''} to the ${clan?.tag || clanTag} roster!`
+    );
     
     // Schedule an immediate data update for this player
     interaction.followUp({
-      content: `Fetching data for ${playerName}... This may take a moment.`,
+      content: `Fetching data for player... This may take a moment.`,
       ephemeral: true
     });
     
-    // This would be an async operation to fetch and update player data
-    // updatePlayerDataInDb(playerId)
-    //   .then(() => interaction.followUp({
-    //     content: `Data update complete for ${playerName}!`,
-    //     ephemeral: true
-    //   }))
-    //   .catch(error => interaction.followUp({
-    //     content: `Warning: Initial data fetch failed: ${error.message}`,
-    //     ephemeral: true
-    //   }));
-    
+    try {
+      await updatePlayerInClan(playerId, clanTag);
+      await interaction.followUp({
+        content: `Data update complete for player!`,
+        ephemeral: true
+      });
+    } catch (error) {
+      await interaction.followUp({
+        content: `Warning: Initial data fetch failed: ${(error as Error).message}`,
+        ephemeral: true
+      });
+    }
   } catch (error) {
-    console.error('Error adding player to roster:', error);
+    Logger.error('Error adding player to roster:', error);
     await interaction.editReply(`Failed to add player: ${(error as Error).message}`);
   }
 }
 
 // Handler for editing a player
-async function handleEditPlayer(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleEditPlayer(interaction: ChatInputCommandInteraction, clanTag: string): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
   
   try {
@@ -200,14 +396,26 @@ async function handleEditPlayer(interaction: ChatInputCommandInteraction): Promi
     const newPlayerName = interaction.options.getString('player_name');
     const newClanTag = interaction.options.getString('clan_tag');
     
+    // Get the clan ID
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    if (!clan) {
+      await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
+      return;
+    }
+    
     // Check if player exists in the roster
     const existingPlayer = await db.select()
       .from(players)
-      .where(eq(players.discordId, discordUser.id))
+      .where(
+        and(
+          eq(players.discordId, discordUser.id),
+          eq(players.clanId, clan.id.toString())
+        )
+      )
       .get();
     
     if (!existingPlayer) {
-      await interaction.editReply(`Error: ${discordUser.tag} is not in the roster. Use \`/roster add\` to add them first.`);
+      await interaction.editReply(`Error: ${discordUser.tag} is not in the ${clanTag} roster. Use \`/roster add\` to add them first.`);
       return;
     }
     
@@ -223,174 +431,32 @@ async function handleEditPlayer(interaction: ChatInputCommandInteraction): Promi
     // Update the player
     await db.update(players)
       .set(updateData)
-      .where(eq(players.discordId, discordUser.id));
+      .where(
+        and(
+          eq(players.discordId, discordUser.id),
+          eq(players.clanId, clan.id.toString())
+        )
+      );
     
-    await interaction.editReply(`Successfully updated ${discordUser.tag} in the roster!`);
+    await interaction.editReply(`Successfully updated ${discordUser.tag} in the ${clanTag} roster!`);
     
-  } catch (error) {
-    console.error('Error editing player in roster:', error);
-    await interaction.editReply(`Failed to edit player: ${(error as Error).message}`);
-  }
-}
-
-// Handler for removing a player
-async function handleRemovePlayer(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
-  
-  try {
-    const discordUser = interaction.options.getUser('discord_user', true);
-    
-    // Check if player exists
-    const existingPlayer = await db.select()
-      .from(players)
-      .where(eq(players.discordId, discordUser.id))
-      .get();
-    
-    if (!existingPlayer) {
-      await interaction.editReply(`Error: ${discordUser.tag} is not in the roster.`);
-      return;
-    }
-    
-    // Request confirmation
-    await interaction.editReply({
-      content: `Are you sure you want to remove ${existingPlayer.username}${existingPlayer.clanTag ? ` [${existingPlayer.clanTag}]` : ''} from the roster? This will delete ALL their data including ship statistics. Type "confirm" to proceed.`
-    });
-    
-    // Create a message collector for confirmation
-    // Check if the channel is a text channel first
-    if (!interaction.channel || !('createMessageCollector' in interaction.channel)) {
-      await interaction.followUp({
-        content: `Error: Could not access the channel for confirmation.`,
-        ephemeral: true
-      });
-      return;
-    }
-    
-    // Get the text channel and type it correctly
-    const channel = interaction.channel as TextChannel;
-    
-    // Create a message collector
-    const filter = (m: any) => m.author.id === interaction.user.id && m.content.toLowerCase() === 'confirm';
-    const collector = channel.createMessageCollector({ 
-      filter, 
-      max: 1, 
-      time: 30000 // 30 seconds timeout
-    });
-    
-    collector.on('collect', async () => {
-      // Delete the player from the database
-      await db.delete(players)
-        .where(eq(players.discordId, discordUser.id));
-      
-      await interaction.followUp({
-        content: `${existingPlayer.username} has been removed from the roster.`,
-        ephemeral: true
-      });
-    });
-    
-    collector.on('end', async (collected) => {
-      // If no messages were collected, it timed out
-      if (collected.size === 0) {
+    // If player ID was changed, update their data
+    if (newPlayerId) {
+      try {
+        await updatePlayerInClan(newPlayerId, clanTag);
         await interaction.followUp({
-          content: `Removal cancelled: Confirmation timeout.`,
+          content: `Updated data for player with new ID: ${newPlayerId}`,
+          ephemeral: true
+        });
+      } catch (error) {
+        await interaction.followUp({
+          content: `Warning: Could not update data for new player ID: ${(error as Error).message}`,
           ephemeral: true
         });
       }
-    });
-    
+    }
   } catch (error) {
-    console.error('Error removing player from roster:', error);
-    await interaction.followUp({
-      content: `Failed to remove player: ${(error as Error).message}`,
-      ephemeral: true
-    });
-  }
-}
-
-// Handler for listing the roster
-async function handleListRoster(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ ephemeral: false });
-  
-  try {
-    const detailed = interaction.options.getBoolean('detailed') || false;
-    
-    // Get all players
-    const allPlayers = await db.select().from(players).all();
-    
-    if (allPlayers.length === 0) {
-      await interaction.editReply('The roster is currently empty. Add players with `/roster add`.');
-      return;
-    }
-    
-    // Sort by name
-    allPlayers.sort((a, b) => a.username.localeCompare(b.username));
-    
-    // Format response based on detail level
-    let response = `**Current Roster (${allPlayers.length} players)**\n\n`;
-    
-    if (detailed) {
-      // Detailed list with Discord user mentions and WG IDs
-      for (const player of allPlayers) {
-        const discordMention = `<@${player.discordId}>`;
-        response += `- **${player.username}**${player.clanTag ? ` [${player.clanTag}]` : ''}\n`;
-        response += `  Discord: ${discordMention}\n`;
-        response += `  WG ID: \`${player.id}\`\n`;
-        
-        if (player.lastUpdated) {
-          const date = new Date(player.lastUpdated);
-          response += `  Last Updated: ${date.toLocaleDateString()}\n`;
-        }
-        
-        response += '\n';
-      }
-    } else {
-      // Simple list with just names and clan tags
-      const playerList = allPlayers.map(p => 
-        `- **${p.username}**${p.clanTag ? ` [${p.clanTag}]` : ''}`
-      );
-      response += playerList.join('\n');
-    }
-    
-    await interaction.editReply(response);
-    
-  } catch (error) {
-    console.error('Error listing roster:', error);
-    await interaction.editReply(`Failed to list roster: ${(error as Error).message}`);
-  }
-}
-
-// Handler for finding a player
-async function handleFindPlayer(interaction: ChatInputCommandInteraction): Promise<void> {
-  await interaction.deferReply({ ephemeral: true });
-  
-  try {
-    const searchName = interaction.options.getString('name', true).toLowerCase();
-    
-    // Find players with matching names (case insensitive)
-    const allPlayers = await db.select().from(players).all();
-    const matchingPlayers = allPlayers.filter(p => 
-      p.username.toLowerCase().includes(searchName)
-    );
-    
-    if (matchingPlayers.length === 0) {
-      await interaction.editReply(`No players found matching "${searchName}".`);
-      return;
-    }
-    
-    // Format response
-    let response = `**Found ${matchingPlayers.length} player(s) matching "${searchName}":**\n\n`;
-    
-    for (const player of matchingPlayers) {
-      const discordMention = `<@${player.discordId}>`;
-      response += `- **${player.username}**${player.clanTag ? ` [${player.clanTag}]` : ''}\n`;
-      response += `  Discord: ${discordMention}\n`;
-      response += `  WG ID: \`${player.id}\`\n\n`;
-    }
-    
-    await interaction.editReply(response);
-    
-  } catch (error) {
-    console.error('Error finding player:', error);
-    await interaction.editReply(`Failed to find player: ${(error as Error).message}`);
+    Logger.error('Error editing player in roster:', error);
+    await interaction.editReply(`Failed to edit player: ${(error as Error).message}`);
   }
 }

@@ -1,7 +1,7 @@
-// src/bot/commands/wows/fetch-clan-battles.ts
+// src/bot/commands/wows/update-clan.ts
 import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
-import { fetchClanBattlesData, fetchAllClanBattlesData } from '../../../services/wargaming/clanbattles.js';
+import { updateClanPlayersData, updateAllClansPlayerStats } from '../../../services/dataupdater.js';
 import { ServerConfigService } from '../../../services/server-config.js';
 import { Logger } from '../../../utils/logger.js';
 import { getAllClanTags } from '../../../config/clans.js';
@@ -9,14 +9,14 @@ import { Config } from '../../../utils/config.js';
 
 export default {
   category: 'wows',
-  cooldown: 30, // Longer cooldown to prevent abuse
+  cooldown: 600, // 10 minute cooldown to prevent API abuse
   data: new SlashCommandBuilder()
-    .setName('fetch-clan-battles')
-    .setDescription('Manually fetch clan battles data')
+    .setName('update-clan')
+    .setDescription('Manually update all players data for a clan')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // Admin only
     .addStringOption(option =>
       option.setName('clan')
-        .setDescription('Clan to fetch data for (defaults to server default, "all" for all clans)')
+        .setDescription('Clan to update (defaults to server default, "all" for all clans)')
         .setRequired(false)
         .addChoices(
           { name: "All Clans", value: "all" },
@@ -46,49 +46,50 @@ export default {
         clanTag = clanOption;
       }
       
-      await interaction.editReply('Fetching clan battles data, please wait...');
+      await interaction.editReply('Starting player data update, please wait. This may take several minutes for a large roster...');
       
       const startTime = Date.now();
       
-      // Handle single clan or all clans
       if (clanTag) {
-        // Fetch data for a single clan
+        // Update a single clan
         const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
         if (!clan) {
           await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
           return;
         }
         
-        const results = await fetchClanBattlesData(clanTag);
+        // Update the clan data
+        const results = await updateClanPlayersData(clan);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         
         // Create an embed with results
         const embed = new EmbedBuilder()
-          .setTitle(`${clanTag} Clan Battles Data Update`)
-          .setDescription(`Clan battles data fetch completed in ${duration}s`)
+          .setTitle(`${clanTag} Players Update`)
+          .setDescription(`Update completed in ${duration}s`)
           .setColor(clan.color)
           .addFields([
-            { name: 'Processed', value: results.processed.toString(), inline: true },
-            { name: 'New Battles', value: results.newBattles.toString(), inline: true },
-            { name: 'Member Entries', value: results.clanMemberPlayers.toString(), inline: true }
+            { name: 'Success', value: results.success.toString(), inline: true },
+            { name: 'Failed', value: results.failed.toString(), inline: true },
+            { name: 'Total', value: (results.success + results.failed).toString(), inline: true }
           ])
           .setFooter({ text: `Requested by ${interaction.user.tag}` })
           .setTimestamp();
         
         await interaction.editReply({ content: null, embeds: [embed] });
       } else {
-        // Fetch data for all clans
-        const results = await fetchAllClanBattlesData();
+        // Update all clans
+        const results = await updateAllClansPlayerStats();
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         
         // Create an embed with results
         const embed = new EmbedBuilder()
-          .setTitle('All Clans Battles Data Update')
-          .setDescription(`Clan battles data fetch completed in ${duration}s`)
+          .setTitle('All Clans Players Update')
+          .setDescription(`Update completed in ${duration}s`)
           .setColor('#0099ff')
           .addFields([
-            { name: 'Total Processed', value: results.totalProcessed.toString(), inline: true },
-            { name: 'Total New Battles', value: results.totalNew.toString(), inline: true }
+            { name: 'Total Success', value: results.totalSuccess.toString(), inline: true },
+            { name: 'Total Failed', value: results.totalFailed.toString(), inline: true },
+            { name: 'Total Players', value: (results.totalSuccess + results.totalFailed).toString(), inline: true }
           ])
           .setFooter({ text: `Requested by ${interaction.user.tag}` })
           .setTimestamp();
@@ -100,7 +101,7 @@ export default {
           
           embed.addFields({
             name: clanResult.clan,
-            value: `Processed: ${clanResult.processed}\nNew: ${clanResult.newBattles}\nMembers: ${clanResult.clanMemberPlayers}`,
+            value: `Success: ${clanResult.success}\nFailed: ${clanResult.failed}`,
             inline: true
           });
         }
@@ -108,8 +109,8 @@ export default {
         await interaction.editReply({ content: null, embeds: [embed] });
       }
     } catch (error) {
-      Logger.error('Error fetching clan battles data:', error);
-      await interaction.editReply(`Error fetching clan battles data: ${(error as Error).message}`);
+      Logger.error('Error updating clan data:', error);
+      await interaction.editReply(`Error updating clan data: ${(error as Error).message}`);
     }
   }
 };

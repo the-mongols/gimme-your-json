@@ -1,8 +1,13 @@
+// src/bot/commands/wows/clan-battles.ts
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
 import { db } from '../../../database/db.js';
-import { clan_battles, clan_battle_teams, clan_battle_players } from "../../../database/drizzle/schema";
+import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../../database/drizzle/schema.js";
 import { desc, eq, and, inArray, like } from 'drizzle-orm';
+import { ServerConfigService } from '../../../services/server-config.js';
+import { Logger } from '../../../utils/logger.js';
+import { getAllClanTags } from '../../../config/clans.js';
+import { Config } from '../../../utils/config.js';
 
 export default {
   category: 'wows',
@@ -10,6 +15,11 @@ export default {
   data: new SlashCommandBuilder()
     .setName('clan-battles')
     .setDescription('Show clan battles statistics')
+    .addStringOption(option =>
+      option.setName('clan')
+        .setDescription('Clan to show stats for (defaults to server default)')
+        .setRequired(false)
+        .addChoices(...getAllClanTags().map(tag => ({ name: tag, value: tag }))))
     .addSubcommand(subcommand =>
       subcommand
         .setName('stats')
@@ -34,85 +44,121 @@ export default {
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply();
     
+    // Ensure we have a guild context
+    if (!interaction.guildId) {
+      await interaction.editReply({
+        content: 'This command can only be used in a server.',
+      });
+      return;
+    }
+    
+    // Get the clan to use (from option or server default)
+    const specifiedClanTag = interaction.options.getString('clan');
+    const defaultClanTag = await ServerConfigService.getDefaultClanTag(interaction.guildId);
+    const clanTag = specifiedClanTag || defaultClanTag;
+    
+    // Get the clan configuration
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    
+    if (!clan) {
+      await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
+      return;
+    }
+    
     const subcommand = interaction.options.getSubcommand();
     
     try {
       switch (subcommand) {
         case 'stats':
-          await showOverallStats(interaction);
+          await showOverallStats(interaction, clan.id.toString(), clanTag);
           break;
         case 'player':
-          await showPlayerStats(interaction);
+          await showPlayerStats(interaction, clan.id.toString(), clanTag);
           break;
         case 'recent':
-          await showRecentBattles(interaction);
+          await showRecentBattles(interaction, clan.id.toString(), clanTag);
           break;
         default:
           await interaction.editReply('Unknown subcommand');
       }
     } catch (error) {
-      console.error(`Error executing clan-battles command (${subcommand}):`, error);
+      Logger.error(`Error executing clan-battles command (${subcommand}):`, error);
       await interaction.editReply(`Error: ${(error as Error).message}`);
     }
   }
 };
 
 // Show overall statistics
-async function showOverallStats(interaction: ChatInputCommandInteraction): Promise<void> {
+async function showOverallStats(
+  interaction: ChatInputCommandInteraction, 
+  clanId: string,
+  clanTag: string
+): Promise<void> {
   // Get total battles count
   const battles = await db.select()
-    .from(clan_battles)
+    .from(clanBattles)
+    .where(eq(clanBattles.clanId, clanId))
     .all();
   
   const battleCount = battles.length;
   
-  // Get PN31 battles count (battles with at least one PN31 player)
-  const pn31Players = await db.select()
-    .from(clan_battle_players)
-    .where(eq(clan_battle_players.is_pn31, 1))
+  // Get clan member battles count (battles with at least one clan member)
+  const clanMemberPlayers = await db.select()
+    .from(clanBattlePlayers)
+    .where(
+      and(
+        eq(clanBattlePlayers.clanId, clanId),
+        eq(clanBattlePlayers.isClanMember, 1)
+      )
+    )
     .all();
   
   // Create a set of unique battle IDs
-  const pn31BattleIds = new Set<string>();
-  for (const player of pn31Players) {
-    if (player.battle_id) {
-      pn31BattleIds.add(player.battle_id);
+  const clanMemberBattleIds = new Set<string>();
+  for (const player of clanMemberPlayers) {
+    if (player.battleId) {
+      clanMemberBattleIds.add(player.battleId);
     }
   }
   
-  const pn31BattlesCount = pn31BattleIds.size;
+  const clanMemberBattlesCount = clanMemberBattleIds.size;
   
-  // Get PN31 player IDs
-  const pn31PlayerIds = new Set<string>();
-  for (const player of pn31Players) {
-    if (player.player_id) {
-      pn31PlayerIds.add(player.player_id);
+  // Get clan member player IDs
+  const clanMemberPlayerIds = new Set<string>();
+  for (const player of clanMemberPlayers) {
+    if (player.playerId) {
+      clanMemberPlayerIds.add(player.playerId);
     }
   }
   
-  const pn31PlayerCount = pn31PlayerIds.size;
+  const clanMemberPlayerCount = clanMemberPlayerIds.size;
   
-  // Count wins/losses for PN31 teams
+  // Count wins/losses for clan member teams
   let wins = 0;
   let losses = 0;
   
-  for (const battleId of pn31BattleIds) {
+  for (const battleId of clanMemberBattleIds) {
     // Get teams for this battle
-    const battlePlayers = pn31Players.filter(p => p.battle_id === battleId);
+    const battlePlayers = clanMemberPlayers.filter(p => p.battleId === battleId);
     
-    // Get unique team IDs for PN31 players
+    // Get unique team IDs for clan member players
     const teamIds = new Set<number>();
     for (const player of battlePlayers) {
-      if (player.team_id) {
-        teamIds.add(player.team_id);
+      if (player.teamId) {
+        teamIds.add(player.teamId);
       }
     }
     
     // Check result for each team
     for (const teamId of teamIds) {
       const team = await db.select()
-        .from(clan_battle_teams)
-        .where(eq(clan_battle_teams.id, teamId))
+        .from(clanBattleTeams)
+        .where(
+          and(
+            eq(clanBattleTeams.id, teamId),
+            eq(clanBattleTeams.clanId, clanId)
+          )
+        )
         .get();
       
       if (team?.result === 'win') {
@@ -126,15 +172,18 @@ async function showOverallStats(interaction: ChatInputCommandInteraction): Promi
   // Calculate win rate percentage if there are battles
   const winRate = wins + losses > 0 ? (wins / (wins + losses) * 100).toFixed(1) : '0.0';
   
+  // Find the clan config for color
+  const clan = Object.values(Config.clans).find(c => c.id.toString() === clanId);
+  
   // Create embed
   const embed = new EmbedBuilder()
-    .setTitle('PN31 Clan Battles Statistics')
-    .setColor('#0099ff')
+    .setTitle(`${clanTag} Clan Battles Statistics`)
+    .setColor(clan?.color || '#0099ff')
     .addFields(
       { name: 'Total Battles Tracked', value: battleCount.toString(), inline: true },
-      { name: 'PN31 Battles', value: pn31BattlesCount.toString(), inline: true },
+      { name: `${clanTag} Battles`, value: clanMemberBattlesCount.toString(), inline: true },
       { name: 'Win Rate', value: `${wins} W / ${losses} L (${winRate}%)`, inline: true },
-      { name: 'Player Count', value: pn31PlayerCount.toString(), inline: true }
+      { name: 'Player Count', value: clanMemberPlayerCount.toString(), inline: true }
     )
     .setTimestamp();
   
@@ -142,40 +191,49 @@ async function showOverallStats(interaction: ChatInputCommandInteraction): Promi
 }
 
 // Show player statistics
-async function showPlayerStats(interaction: ChatInputCommandInteraction): Promise<void> {
+async function showPlayerStats(
+  interaction: ChatInputCommandInteraction,
+  clanId: string,
+  clanTag: string
+): Promise<void> {
   const playerName = interaction.options.getString('name', true);
   
   // Find player
   const playerMatches = await db
     .select()
-    .from(clan_battle_players)
-    .where(like(clan_battle_players.player_name, `%${playerName}%`))
+    .from(clanBattlePlayers)
+    .where(
+      and(
+        like(clanBattlePlayers.playerName, `%${playerName}%`),
+        eq(clanBattlePlayers.clanId, clanId)
+      )
+    )
     .all();
   
   if (playerMatches.length === 0) {
-    await interaction.editReply(`No player found matching "${playerName}"`);
+    await interaction.editReply(`No player found matching "${playerName}" in ${clanTag} battles`);
     return;
   }
   
   // Group by player ID (might have multiple matches)
   const playerGroups: Record<string, typeof playerMatches[0][]> = {};
   for (const match of playerMatches) {
-    if (!match.player_id) continue;
+    if (!match.playerId) continue;
     
-    if (!playerGroups[match.player_id]) {
-      playerGroups[match.player_id] = [];
+    if (!playerGroups[match.playerId]) {
+      playerGroups[match.playerId] = [];
     }
-    playerGroups[match.player_id].push(match);
+    playerGroups[match.playerId].push(match);
   }
   
   // If we have multiple players, show a list to choose from
   if (Object.keys(playerGroups).length > 1) {
     const playerList = Object.entries(playerGroups).map(([id, matches]) => {
       const player = matches[0];
-      return `• ${player.player_name || 'Unknown'} (ID: ${player.player_id}, ${matches.length} battles)`;
+      return `• ${player.playerName || 'Unknown'} (ID: ${player.playerId}, ${matches.length} battles)`;
     }).join('\n');
     
-    await interaction.editReply(`Found multiple players matching "${playerName}":\n${playerList}\n\nPlease search with a more specific name.`);
+    await interaction.editReply(`Found multiple players matching "${playerName}" in ${clanTag} battles:\n${playerList}\n\nPlease search with a more specific name.`);
     return;
   }
   
@@ -198,12 +256,17 @@ async function showPlayerStats(interaction: ChatInputCommandInteraction): Promis
   let losses = 0;
   
   for (const battle of playerBattles) {
-    if (!battle.team_id) continue;
+    if (!battle.teamId) continue;
     
     const team = await db
       .select()
-      .from(clan_battle_teams)
-      .where(eq(clan_battle_teams.id, battle.team_id))
+      .from(clanBattleTeams)
+      .where(
+        and(
+          eq(clanBattleTeams.id, battle.teamId),
+          eq(clanBattleTeams.clanId, clanId)
+        )
+      )
       .get();
     
     if (team?.result === 'win') {
@@ -216,9 +279,9 @@ async function showPlayerStats(interaction: ChatInputCommandInteraction): Promis
   // Count ship usage
   const shipCounts: Record<string, number> = {};
   for (const battle of playerBattles) {
-    if (!battle.ship_name) continue;
+    if (!battle.shipName) continue;
     
-    const shipName = battle.ship_name;
+    const shipName = battle.shipName;
     if (!shipCounts[shipName]) {
       shipCounts[shipName] = 0;
     }
@@ -234,10 +297,13 @@ async function showPlayerStats(interaction: ChatInputCommandInteraction): Promis
   const winRate = totalBattles > 0 ? (wins / totalBattles * 100).toFixed(1) : '0.0';
   const survivalRate = totalBattles > 0 ? (survivedBattles / totalBattles * 100).toFixed(1) : '0.0';
   
+  // Find the clan config for color
+  const clan = Object.values(Config.clans).find(c => c.id.toString() === clanId);
+  
   // Create embed
   const embed = new EmbedBuilder()
-    .setTitle(`Player Statistics: ${playerData.player_name || 'Unknown'}`)
-    .setColor('#0099ff')
+    .setTitle(`Player Statistics: ${playerData.playerName || 'Unknown'} (${clanTag})`)
+    .setColor(clan?.color || '#0099ff')
     .addFields(
       { name: 'Battles', value: totalBattles.toString(), inline: true },
       { name: 'Win Rate', value: `${wins} W / ${losses} L (${winRate}%)`, inline: true },
@@ -252,45 +318,58 @@ async function showPlayerStats(interaction: ChatInputCommandInteraction): Promis
 }
 
 // Show recent battles
-async function showRecentBattles(interaction: ChatInputCommandInteraction): Promise<void> {
+async function showRecentBattles(
+  interaction: ChatInputCommandInteraction,
+  clanId: string,
+  clanTag: string
+): Promise<void> {
   const count = interaction.options.getInteger('count') || 5;
   
   // Get recent battles
   const recentBattles = await db
     .select()
-    .from(clan_battles)
-    .orderBy(desc(clan_battles.finished_at))
+    .from(clanBattles)
+    .where(eq(clanBattles.clanId, clanId))
+    .orderBy(desc(clanBattles.finishedAt))
     .limit(count)
     .all();
   
   if (recentBattles.length === 0) {
-    await interaction.editReply('No battles found');
+    await interaction.editReply(`No battles found for ${clanTag}`);
     return;
   }
   
+  // Find the clan config for color
+  const clan = Object.values(Config.clans).find(c => c.id.toString() === clanId);
+  
   // Create embed
   const embed = new EmbedBuilder()
-    .setTitle(`Recent Clan Battles (${recentBattles.length})`)
-    .setColor('#0099ff')
+    .setTitle(`Recent ${clanTag} Clan Battles (${recentBattles.length})`)
+    .setColor(clan?.color || '#0099ff')
     .setTimestamp();
   
   for (const battle of recentBattles) {
     // Get teams
     const teams = await db
       .select()
-      .from(clan_battle_teams)
-      .where(eq(clan_battle_teams.battle_id, battle.id))
+      .from(clanBattleTeams)
+      .where(
+        and(
+          eq(clanBattleTeams.battleId, battle.id),
+          eq(clanBattleTeams.clanId, clanId)
+        )
+      )
       .all();
     
     // Format team info
     const teamInfo = teams.map(team => 
-      `Team ${team.team_number}: ${team.clan_tag || 'Unknown'} (${(team.result || 'UNKNOWN').toUpperCase()})`
+      `Team ${team.teamNumber}: ${team.clanTag || 'Unknown'} (${(team.result || 'UNKNOWN').toUpperCase()})`
     ).join(' vs ');
     
     // Format field value
     const fieldValue = [
-      `Date: ${new Date(battle.finished_at || '').toLocaleString()}`,
-      `Map: ${battle.map_name || 'Unknown'}`,
+      `Date: ${new Date(battle.finishedAt || '').toLocaleString()}`,
+      `Map: ${battle.mapName || 'Unknown'}`,
       `Teams: ${teamInfo}`
     ].join('\n');
     

@@ -1,22 +1,22 @@
-// src/bot/commands/wows/fetch-clan-battles.ts
+// src/bot/commands/sheets/export.ts
 import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
-import { fetchClanBattlesData, fetchAllClanBattlesData } from '../../../services/wargaming/clanbattles.js';
+import { uploadClanDataToSheet, uploadDataToSheets } from '../../../services/sheets/client.js';
 import { ServerConfigService } from '../../../services/server-config.js';
 import { Logger } from '../../../utils/logger.js';
 import { getAllClanTags } from '../../../config/clans.js';
 import { Config } from '../../../utils/config.js';
 
 export default {
-  category: 'wows',
-  cooldown: 30, // Longer cooldown to prevent abuse
+  category: 'sheets',
+  cooldown: 60, // Longer cooldown due to API limits
   data: new SlashCommandBuilder()
-    .setName('fetch-clan-battles')
-    .setDescription('Manually fetch clan battles data')
+    .setName('export-sheets')
+    .setDescription('Export player and ship data to Google Sheets')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // Admin only
     .addStringOption(option =>
       option.setName('clan')
-        .setDescription('Clan to fetch data for (defaults to server default, "all" for all clans)')
+        .setDescription('Clan to export data for (defaults to server default, "all" for all clans)')
         .setRequired(false)
         .addChoices(
           { name: "All Clans", value: "all" },
@@ -46,49 +46,55 @@ export default {
         clanTag = clanOption;
       }
       
-      await interaction.editReply('Fetching clan battles data, please wait...');
+      await interaction.editReply('Exporting data to Google Sheets, please wait...');
       
       const startTime = Date.now();
       
-      // Handle single clan or all clans
       if (clanTag) {
-        // Fetch data for a single clan
+        // Export data for a single clan
         const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
         if (!clan) {
           await interaction.editReply(`Error: Clan "${clanTag}" not found in configuration.`);
           return;
         }
         
-        const results = await fetchClanBattlesData(clanTag);
+        // Get clan-specific sheet ID if available, or fallback to default
+        const sheetId = process.env[`GOOGLE_SHEET_ID_${clanTag}`] || Config.google.sheetId;
+        
+        if (!sheetId) {
+          await interaction.editReply(`Error: No Google Sheet ID configured for clan ${clanTag}.`);
+          return;
+        }
+        
+        const success = await uploadClanDataToSheet(clanTag, sheetId);
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         
         // Create an embed with results
         const embed = new EmbedBuilder()
-          .setTitle(`${clanTag} Clan Battles Data Update`)
-          .setDescription(`Clan battles data fetch completed in ${duration}s`)
+          .setTitle(`${clanTag} Data Export`)
+          .setDescription(`Data export to Google Sheets completed in ${duration}s`)
           .setColor(clan.color)
           .addFields([
-            { name: 'Processed', value: results.processed.toString(), inline: true },
-            { name: 'New Battles', value: results.newBattles.toString(), inline: true },
-            { name: 'Member Entries', value: results.clanMemberPlayers.toString(), inline: true }
+            { name: 'Status', value: success ? '✅ Success' : '❌ Failed', inline: true },
+            { name: 'Sheet ID', value: sheetId.substring(0, 10) + '...', inline: true }
           ])
           .setFooter({ text: `Requested by ${interaction.user.tag}` })
           .setTimestamp();
         
         await interaction.editReply({ content: null, embeds: [embed] });
       } else {
-        // Fetch data for all clans
-        const results = await fetchAllClanBattlesData();
+        // Export data for all clans
+        const results = await uploadDataToSheets();
         const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         
         // Create an embed with results
         const embed = new EmbedBuilder()
-          .setTitle('All Clans Battles Data Update')
-          .setDescription(`Clan battles data fetch completed in ${duration}s`)
+          .setTitle('All Clans Data Export')
+          .setDescription(`Data export to Google Sheets completed in ${duration}s`)
           .setColor('#0099ff')
           .addFields([
-            { name: 'Total Processed', value: results.totalProcessed.toString(), inline: true },
-            { name: 'Total New Battles', value: results.totalNew.toString(), inline: true }
+            { name: 'Total Success', value: results.totalSuccess.toString(), inline: true },
+            { name: 'Total Clans', value: results.results.length.toString(), inline: true }
           ])
           .setFooter({ text: `Requested by ${interaction.user.tag}` })
           .setTimestamp();
@@ -100,7 +106,7 @@ export default {
           
           embed.addFields({
             name: clanResult.clan,
-            value: `Processed: ${clanResult.processed}\nNew: ${clanResult.newBattles}\nMembers: ${clanResult.clanMemberPlayers}`,
+            value: clanResult.success ? '✅ Success' : '❌ Failed',
             inline: true
           });
         }
@@ -108,8 +114,8 @@ export default {
         await interaction.editReply({ content: null, embeds: [embed] });
       }
     } catch (error) {
-      Logger.error('Error fetching clan battles data:', error);
-      await interaction.editReply(`Error fetching clan battles data: ${(error as Error).message}`);
+      Logger.error('Error exporting data to Google Sheets:', error);
+      await interaction.editReply(`Error exporting data: ${(error as Error).message}`);
     }
   }
 };

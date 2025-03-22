@@ -1,6 +1,5 @@
-// ./src/utils -> Helper functions & utilities
-
-// Centralized configuration loading
+// src/utils/config.ts
+import { clans, defaultClan } from '../config/clans.js';
 
 /**
  * Central configuration module for accessing environment variables
@@ -14,7 +13,6 @@ export const Config = {
   wargaming: {
     apiKey: process.env.WG_API_KEY,
     region: process.env.WG_API_REGION || 'na',
-    cookies: process.env.WOWS_COOKIES,
   },
   google: {
     sheetId: process.env.GOOGLE_SHEET_ID,
@@ -28,8 +26,8 @@ export const Config = {
     updateHour: parseInt(process.env.UPDATE_HOUR || '0', 10),
     updateMinute: parseInt(process.env.UPDATE_MINUTE || '0', 10),
   },
-  clan: {
-    tag: 'PN31',
-    id: 1000072593, // Replace with env var when available
-  }
+  clans: clans,
+  defaultClan: defaultClan
 };
+
+export default Config;

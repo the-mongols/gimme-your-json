@@ -1,13 +1,16 @@
-import { updateAllPlayersData } from '../services/wargaming/api.js';
-import { uploadDataToSheet } from '../services/sheets/client.js';
-import { fetchClanBattlesData } from '../services/wargaming/clanbattles.js';
+// src/scheduler/index.ts
+import { updateAllClansPlayerStats } from '../services/dataupdater.js';
+import { fetchAllClanBattlesData } from '../services/wargaming/clanbattles.js';
+import { uploadDataToSheets } from '../services/sheets/client.js';
+import { Config } from '../utils/config.js';
+import { Logger } from '../utils/logger.js';
 
 // Configuration for scheduled updates
-const UPDATE_HOUR = parseInt(process.env.UPDATE_HOUR || '0', 10);  // Default to midnight
-const UPDATE_MINUTE = parseInt(process.env.UPDATE_MINUTE || '0', 10);
+const UPDATE_HOUR = Config.scheduler.updateHour;
+const UPDATE_MINUTE = Config.scheduler.updateMinute;
 
 export async function setupScheduler() {
-  console.log('Setting up scheduled tasks...');
+  Logger.info('Setting up scheduled tasks...');
   
   // Schedule daily data update - using Bun's native setTimeout for simplicity
   // In production, consider using a more robust scheduler
@@ -25,8 +28,8 @@ function scheduleNextUpdate() {
   const now = new Date();
   const timeUntilUpdate = nextUpdateTime.getTime() - now.getTime();
   
-  console.log(`Next data update scheduled for ${nextUpdateTime.toLocaleString()}`);
-  console.log(`(in ${Math.floor(timeUntilUpdate / (1000 * 60 * 60))} hours and ${Math.floor((timeUntilUpdate % (1000 * 60 * 60)) / (1000 * 60))} minutes)`);
+  Logger.info(`Next data update scheduled for ${nextUpdateTime.toLocaleString()}`);
+  Logger.info(`(in ${Math.floor(timeUntilUpdate / (1000 * 60 * 60))} hours and ${Math.floor((timeUntilUpdate % (1000 * 60 * 60)) / (1000 * 60))} minutes)`);
   
   // Schedule the update
   setTimeout(async () => {
@@ -59,39 +62,40 @@ function getNextUpdateTime(): Date {
   return nextUpdate;
 }
 
-// Run the scheduled update tasks
+// Run the scheduled update tasks for all clans
 export async function runScheduledUpdate() {
-  console.log('Running scheduled data update...');
+  Logger.info('Running scheduled data update for all clans...');
   const startTime = Date.now();
   
   try {
-    // Step 1: Update player data from WG API
-    console.log('Updating player data from Wargaming API...');
-    const updateResults = await updateAllPlayersData();
-    console.log(`Player data update completed: ${updateResults.success} succeeded, ${updateResults.failed} failed`);
+    // Step 1: Update player data from WG API for all clans
+    Logger.info('Updating player data from Wargaming API for all clans...');
+    const updateResults = await updateAllClansPlayerStats();
+    Logger.info(`Player data update completed: ${updateResults.totalSuccess} succeeded, ${updateResults.totalFailed} failed`);
     
-    // Step 1.5: Update clan battles data
-    console.log('Updating clan battles data...');
-    const clanBattlesResults = await fetchClanBattlesData();
-    console.log(`Clan battles data update completed: processed ${clanBattlesResults.processed} battles, ${clanBattlesResults.newBattles} new, ${clanBattlesResults.pn31Players} PN31 player entries`);
+    // Step 2: Update clan battles data for all clans
+    Logger.info('Updating clan battles data for all clans...');
+    const clanBattlesResults = await fetchAllClanBattlesData();
+    Logger.info(`Clan battles data update completed: processed ${clanBattlesResults.totalProcessed} battles, ${clanBattlesResults.totalNew} new battles added`);
     
-    // Step 2: Upload data to Google Sheets
-    console.log('Uploading data to Google Sheets...');
-    await uploadDataToSheet();
-    console.log('Google Sheets data upload completed');
+    // Step 3: Upload data to Google Sheets for all clans
+    Logger.info('Uploading data to Google Sheets for all clans...');
+    const sheetsResults = await uploadDataToSheets();
+    Logger.info(`Google Sheets data upload completed`);
     
-    // Step 3: Report completion
+    // Step 4: Report completion
     const duration = (Date.now() - startTime) / 1000;
-    console.log(`Scheduled update completed successfully in ${duration.toFixed(2)} seconds`);
+    Logger.info(`Scheduled update completed successfully in ${duration.toFixed(2)} seconds`);
     
     return {
       status: 'success',
       duration,
       playerUpdates: updateResults,
-      clanBattles: clanBattlesResults
+      clanBattles: clanBattlesResults,
+      sheets: sheetsResults
     };
   } catch (error) {
-    console.error('Error during scheduled update:', error);
+    Logger.error('Error during scheduled update:', error);
     
     return {
       status: 'error',
@@ -102,7 +106,25 @@ export async function runScheduledUpdate() {
 }
 
 // Function to trigger an immediate update (for admin commands)
-export async function triggerManualUpdate() {
-  console.log('Manual update triggered');
-  return runScheduledUpdate();
+export async function triggerManualUpdate(clanTag?: string) {
+  Logger.info(`Manual update triggered ${clanTag ? `for clan ${clanTag}` : 'for all clans'}`);
+  
+  if (clanTag) {
+    // Run update for a single clan
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    
+    if (!clan) {
+      throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+    }
+    
+    // Implementation for single clan update
+    // TODO: Implement single clan update logic
+    return {
+      status: 'not_implemented',
+      message: 'Single clan update not yet implemented'
+    };
+  } else {
+    // Run update for all clans
+    return runScheduledUpdate();
+  }
 }

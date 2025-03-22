@@ -1,18 +1,52 @@
+// src/services/sheets/client.ts
 import { db } from '../../database/db.js';
 import { players, ships } from '../../database/drizzle/schema.js';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
+import { Config } from '../../utils/config.js';
+import { Logger } from '../../utils/logger.js';
 
-// Direct Google API method to avoid dependencies
+// Google API client for sheets
+async function generateJWT(email: string, privateKey: string): Promise<string> {
+  // For a production application, you would implement proper JWT generation
+  // This is a simplified placeholder
+  const header = {
+    alg: 'RS256',
+    typ: 'JWT'
+  };
+  
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iss: email,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now
+  };
+  
+  // In a real implementation, you'd use a JWT library
+  Logger.debug('JWT would be generated with:', { header, payload });
+  
+  // Return a placeholder - replace with actual implementation
+  return 'placeholder_jwt_token';
+}
+
+/**
+ * Upload data to Google Sheets
+ * @param sheetId Google Sheets ID
+ * @param sheetName Sheet name within the spreadsheet
+ * @param values Array of row values to upload
+ * @returns Success status
+ */
 async function uploadToGoogleSheets(
   sheetId: string, 
   sheetName: string, 
   values: any[][]
 ): Promise<boolean> {
   try {
-    const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-    const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n');
+    Logger.info(`Uploading data to Google Sheets: ${sheetName}`);
+    
+    const serviceAccountEmail = Config.google.serviceAccountEmail;
+    const privateKey = Config.google.privateKey;
     
     if (!serviceAccountEmail || !privateKey) {
       throw new Error('Google API credentials missing. Check environment variables.');
@@ -41,52 +75,86 @@ async function uploadToGoogleSheets(
     
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(`Google Sheets API error: ${error.error.message}`);
+      throw new Error(`Google Sheets API error: ${error.error?.message || response.statusText}`);
     }
     
     return true;
   } catch (error) {
-    console.error('Error uploading to Google Sheets:', error);
+    Logger.error('Error uploading to Google Sheets:', error);
     throw error;
   }
 }
 
-// JWT token generation
-async function generateJWT(email: string, privateKey: string): Promise<string> {
-  // Simple implementation for JWT generation
-  // In a production app, use a proper JWT library
-  const header = {
-    alg: 'RS256',
-    typ: 'JWT'
+/**
+ * Upload data to Google Sheets for all clans
+ * @returns Results for each clan
+ */
+export async function uploadDataToSheets(): Promise<{
+  results: Array<{
+    clan: string;
+    success: boolean;
+  }>;
+  totalSuccess: number;
+}> {
+  Logger.info('Uploading data to Google Sheets for all clans...');
+  
+  const results = [];
+  let totalSuccess = 0;
+  
+  for (const clan of Object.values(Config.clans)) {
+    try {
+      // Get the clan-specific sheet ID if available, otherwise use the default
+      const sheetId = process.env[`GOOGLE_SHEET_ID_${clan.tag}`] || Config.google.sheetId;
+      
+      if (!sheetId) {
+        Logger.warn(`No Google Sheet ID available for clan ${clan.tag}`);
+        results.push({
+          clan: clan.tag,
+          success: false
+        });
+        continue;
+      }
+      
+      // Upload data for this clan
+      await uploadClanDataToSheet(clan.tag, sheetId);
+      results.push({
+        clan: clan.tag,
+        success: true
+      });
+      totalSuccess++;
+    } catch (error) {
+      Logger.error(`Failed to upload data for clan ${clan.tag}:`, error);
+      results.push({
+        clan: clan.tag,
+        success: false
+      });
+    }
+  }
+  
+  Logger.info(`Completed data upload to Google Sheets. Success for ${totalSuccess} clans.`);
+  
+  return {
+    results,
+    totalSuccess
   };
-  
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now
-  };
-  
-  // For simplicity, we're using a placeholder
-  // In a real implementation, you'd use a JWT library or the google-auth-library
-  console.log('JWT would be generated with:', { header, payload });
-  
-  // Return a placeholder - replace with actual implementation
-  return 'placeholder_jwt_token';
 }
 
-export async function uploadDataToSheet(): Promise<boolean> {
+/**
+ * Upload data for a specific clan to Google Sheets
+ * @param clanTag Clan tag (e.g., "PN31")
+ * @param sheetId Google Sheets ID
+ */
+export async function uploadClanDataToSheet(clanTag: string, sheetId: string): Promise<boolean> {
   try {
-    const sheetId = process.env.GOOGLE_SHEET_ID;
+    Logger.info(`Uploading data for clan ${clanTag} to Google Sheets...`);
     
-    if (!sheetId) {
-      throw new Error('Google Sheet ID missing. Check environment variables.');
+    const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+    if (!clan) {
+      throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
     }
     
     // Get player data with ships
-    const playersData = await getPlayersWithShips();
+    const playersData = await getPlayersWithShips(clan.id.toString());
     
     // Prepare data for player stats sheet
     const playerRows = preparePlayerData(playersData);
@@ -95,31 +163,43 @@ export async function uploadDataToSheet(): Promise<boolean> {
     const shipRows = prepareShipData(playersData);
     
     // Upload player data
-    await uploadToGoogleSheets(sheetId, 'PlayerStats', playerRows);
+    await uploadToGoogleSheets(sheetId, `${clanTag}_PlayerStats`, playerRows);
     
     // Upload ship data
-    await uploadToGoogleSheets(sheetId, 'ShipStats', shipRows);
+    await uploadToGoogleSheets(sheetId, `${clanTag}_ShipStats`, shipRows);
     
-    console.log('Google Sheets data updated successfully');
+    Logger.info(`Google Sheets data updated successfully for clan ${clanTag}`);
     return true;
   } catch (error) {
-    console.error('Error updating Google Sheets:', error);
+    Logger.error(`Error updating Google Sheets for clan ${clanTag}:`, error);
     throw error;
   }
 }
 
-async function getPlayersWithShips() {
-  // Get all players
-  const allPlayers = await db.select().from(players);
+/**
+ * Get all players with their ships for a specific clan
+ * @param clanId Clan ID
+ * @returns Players with their ships data
+ */
+async function getPlayersWithShips(clanId: string) {
+  // Get all players for this clan
+  const allPlayers = await db.select()
+    .from(players)
+    .where(eq(players.clanId, clanId));
   
   // For each player, get their ships
   const playersWithShips = [];
   
   for (const player of allPlayers) {
-    // Query ships for this player - Fix: use eq() for comparison instead of ==
+    // Query ships for this player - use composite key
     const playerShips = await db.select()
       .from(ships)
-      .where(eq(ships.playerId, player.id));
+      .where(
+        and(
+          eq(ships.playerId, player.id),
+          eq(ships.clanId, clanId)
+        )
+      );
     
     playersWithShips.push({
       ...player,
@@ -130,6 +210,11 @@ async function getPlayersWithShips() {
   return playersWithShips;
 }
 
+/**
+ * Prepare player data for Google Sheets
+ * @param playersData Players with ships data
+ * @returns Formatted rows for Google Sheets
+ */
 function preparePlayerData(playersData: any[]): any[][] {
   // Format for player summary sheet
   const rows = [
@@ -152,6 +237,11 @@ function preparePlayerData(playersData: any[]): any[][] {
   return rows;
 }
 
+/**
+ * Prepare ship data for Google Sheets
+ * @param playersData Players with ships data
+ * @returns Formatted rows for Google Sheets
+ */
 function prepareShipData(playersData: any[]): any[][] {
   // Headers for ship stats sheet
   const rows = [
