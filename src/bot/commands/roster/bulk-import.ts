@@ -2,7 +2,10 @@ import { SlashCommandBuilder, PermissionFlagsBits, AttachmentBuilder } from 'dis
 import type { ChatInputCommandInteraction } from 'discord.js';
 import { db } from '../../../database/db.js';
 import { players } from '../../../database/drizzle/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
+import { ServerConfigService } from '../../../services/server-config.js';
+import { Config } from '../../../utils/config.js';
+import { Logger } from '../../../utils/logger.js';
 
 // Simple CSV parser function to avoid dependency on Papa
 function parseCSV(text: string): string[][] {
@@ -43,6 +46,11 @@ export default {
       option.setName('csv_file')
         .setDescription('CSV file with player data (discord_id,player_id,player_name,clan_tag)')
         .setRequired(true))
+    .addStringOption(option =>
+      option.setName('clan')
+        .setDescription('Clan to import to (defaults to server default)')
+        .setRequired(false)
+        .addChoices(...Object.values(Config.clans).map(c => ({ name: c.tag, value: c.tag }))))
     .addBooleanOption(option =>
       option.setName('skip_first_row')
         .setDescription('Skip first row (headers)')
@@ -56,6 +64,30 @@ export default {
     await interaction.deferReply({ ephemeral: true });
     
     try {
+      // Get the clan to use (from option or server default)
+      const specifiedClanTag = interaction.options.getString('clan');
+      let clanTag: string;
+      
+      if (specifiedClanTag) {
+        clanTag = specifiedClanTag;
+      } else {
+        // Get server default clan
+        if (!interaction.guildId) {
+          throw new Error('This command can only be used in a server');
+        }
+        
+        clanTag = await ServerConfigService.getDefaultClanTag(interaction.guildId);
+      }
+      
+      // Get the clan configuration
+      const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+      
+      if (!clan) {
+        throw new Error(`Clan "${clanTag}" not found in configuration`);
+      }
+      
+      const clanId = clan.id.toString();
+      
       const csvFile = interaction.options.getAttachment('csv_file', true);
       const skipFirstRow = interaction.options.getBoolean('skip_first_row') ?? true;
       const dryRun = interaction.options.getBoolean('dry_run') ?? false;
@@ -115,7 +147,7 @@ export default {
           continue;
         }
         
-        const [discordId, playerId, playerName, clanTag = ''] = row.map(cell => cell.trim());
+        const [discordId, playerId, playerName, rowClanTag = ''] = row.map(cell => cell.trim());
         
         // Validate Discord ID
         if (!/^\d{17,20}$/.test(discordId)) {
@@ -131,37 +163,47 @@ export default {
           continue;
         }
         
-        // Check for existing player by Discord ID
+        // Check for existing player by Discord ID in this clan
         const existingByDiscord = await db.select()
           .from(players)
-          .where(eq(players.discordId, discordId))
+          .where(
+            and(
+              eq(players.discordId, discordId),
+              eq(players.clanId, clanId)
+            )
+          )
           .get();
         
         if (existingByDiscord) {
           results.duplicates++;
-          results.errors.push(`Row ${rowNum}: Discord ID ${discordId} already in roster as ${existingByDiscord.username}`);
+          results.errors.push(`Row ${rowNum}: Discord ID ${discordId} already in ${clanTag} roster as ${existingByDiscord.username}`);
           continue;
         }
         
-        // Check for existing player by WG ID
+        // Check for existing player by WG ID in this clan
         const existingByWG = await db.select()
           .from(players)
-          .where(eq(players.id, playerId))
+          .where(
+            and(
+              eq(players.id, playerId),
+              eq(players.clanId, clanId)
+            )
+          )
           .get();
         
         if (existingByWG) {
           results.duplicates++;
-          results.errors.push(`Row ${rowNum}: WG ID ${playerId} already in roster as ${existingByWG.username}`);
+          results.errors.push(`Row ${rowNum}: WG ID ${playerId} already in ${clanTag} roster as ${existingByWG.username}`);
           continue;
         }
         
         results.valid++;
         validRows.push({
           id: playerId,
-          clanId: "1000072593", // Default clan ID
+          clanId: clanId,
           username: playerName,
           discordId: discordId,
-          clanTag: clanTag || null,
+          clanTag: rowClanTag || null,
           lastUpdated: Date.now()
         });
       }
@@ -169,7 +211,7 @@ export default {
       // In dry run mode, just report what would happen
       if (dryRun) {
         const report = `
-## Roster Import Dry Run Results
+## Roster Import Dry Run Results for ${clanTag}
 
 - **Total rows**: ${results.total}
 - **Valid entries**: ${results.valid}
@@ -197,7 +239,7 @@ To actually import the data, run the command without the dry_run option.
       
       // Generate final report
       const report = `
-## Roster Import Results
+## Roster Import Results for ${clanTag}
 
 - **Total rows**: ${results.total}
 - **Successfully imported**: ${results.success}
@@ -208,12 +250,12 @@ ${results.errors.length > 0 ? '### Errors\n' + results.errors.join('\n') : ''}
 `;
       
       await interaction.editReply({
-        content: `Import completed! ${results.success} player(s) added to the roster.`,
+        content: `Import completed! ${results.success} player(s) added to the ${clanTag} roster.`,
         files: [new AttachmentBuilder(Buffer.from(report), { name: 'import-results.md' })]
       });
       
     } catch (error) {
-      console.error('Error importing roster:', error);
+      Logger.error('Error importing roster:', error);
       await interaction.editReply(`Failed to import roster: ${(error as Error).message}`);
     }
   }

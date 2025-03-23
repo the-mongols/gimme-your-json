@@ -1,7 +1,7 @@
 // src/services/dataupdater.ts
 import { db } from "../database/db.js";
 import { players, ships, statHistory } from "../database/drizzle/schema.js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { getApiClientForClan } from "./wargaming/client.js";
 import { calculateShipScore } from "./metrics/calculator.js";
 import { Logger } from "../utils/logger.js";
@@ -91,14 +91,33 @@ export async function updateClanPlayersData(clan: ClanConfig): Promise<{
   let successCount = 0;
   let failCount = 0;
   
-  for (const player of allPlayers) {
-    try {
-      // Update the player's data
-      await updatePlayerData(player.id, clan);
-      successCount++;
-    } catch (error) {
-      Logger.error(`Error updating player ${player.id} in clan ${clan.tag}:`, error);
-      failCount++;
+  // Process players in batches of 10 to avoid overloading the API
+  const batchSize = 10;
+  for (let i = 0; i < allPlayers.length; i += batchSize) {
+    const batch = allPlayers.slice(i, i + batchSize);
+    
+    // Create an array of promises for concurrent processing
+    const promises = batch.map(player => 
+      updatePlayerData(player.id, clan)
+        .then(() => ({ success: true }))
+        .catch(error => {
+          Logger.error(`Error updating player ${player.id} in clan ${clan.tag}:`, error);
+          return { success: false };
+        })
+    );
+    
+    // Wait for all promises in the batch to resolve
+    const results = await Promise.all(promises);
+    
+    // Count successes and failures
+    results.forEach(result => {
+      if (result.success) successCount++;
+      else failCount++;
+    });
+    
+    // Optional: add a small delay between batches to prevent rate limiting
+    if (i + batchSize < allPlayers.length) {
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
   
@@ -138,6 +157,23 @@ export async function updatePlayerData(accountId: string, clan: ClanConfig): Pro
     // Fetch player's ships data
     const shipsData = await apiClient.getPlayerShips(accountId);
     
+    // Process ships in batches
+    const shipBatchValues = [];
+    const shipHistoryEntries = [];
+    const now = Date.now();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const timestamp = today.getTime();
+    
+    // Map API ship type codes to readable types
+    const typeMap: Record<string, string> = {
+      "Destroyer": "DD",
+      "Cruiser": "CA",
+      "Battleship": "BB",
+      "AirCarrier": "CV",
+      "Submarine": "SS"
+    };
+    
     // Process each ship
     for (const shipData of shipsData) {
       // Skip ships with no battles
@@ -168,116 +204,80 @@ export async function updatePlayerData(accountId: string, clan: ClanConfig): Pro
         fragAvg: shipData.pvp.frags / battles
       });
       
-      // Map API ship type codes to readable types
-      const typeMap: Record<string, string> = {
-        "Destroyer": "DD",
-        "Cruiser": "CA",
-        "Battleship": "BB",
-        "AirCarrier": "CV",
-        "Submarine": "SS"
-      };
+      // Prepare ship data for batch insert
+      shipBatchValues.push({
+        id: shipData.ship_id,
+        playerId: accountId,
+        clanId: clan.id.toString(),
+        name: shipInfo.name,
+        tier: shipInfo.tier,
+        type: typeMap[shipInfo.type] || shipInfo.type,
+        nation: shipInfo.nation,
+        battles: battles,
+        wins: wins,
+        survived: survived,
+        winRate: winRate,
+        survivalRate: survivalRate,
+        damageAvg: damageAvg,
+        fragAvg: shipData.pvp.frags / battles,
+        shipScore: shipScore,
+        lastPlayed: shipData.last_battle_time,
+        lastUpdated: now
+      });
       
-      // Update or insert ship data
+      // Prepare history entry
+      shipHistoryEntries.push({
+        shipId: shipData.ship_id,
+        playerId: accountId,
+        clanId: clan.id.toString(),
+        date: timestamp,
+        battles: battles,
+        winRate: winRate,
+        damageAvg: damageAvg,
+        shipScore: shipScore
+      });
+    }
+    
+    // Batch insert/update ships
+    if (shipBatchValues.length > 0) {
       await db.insert(ships)
-        .values({
-          id: shipData.ship_id,
-          playerId: accountId,
-          clanId: clan.id.toString(),
-          name: shipInfo.name,
-          tier: shipInfo.tier,
-          type: typeMap[shipInfo.type] || shipInfo.type,
-          nation: shipInfo.nation,
-          battles: battles,
-          wins: wins,
-          survived: survived,
-          winRate: winRate,
-          survivalRate: survivalRate,
-          damageAvg: damageAvg,
-          fragAvg: shipData.pvp.frags / battles,
-          shipScore: shipScore,
-          lastPlayed: shipData.last_battle_time,
-          lastUpdated: Date.now()
-        })
+        .values(shipBatchValues)
         .onConflictDoUpdate({
           target: [ships.id, ships.playerId, ships.clanId],
           set: {
-            battles: battles,
-            wins: wins,
-            survived: survived,
-            winRate: winRate,
-            survivalRate: survivalRate,
-            damageAvg: damageAvg,
-            fragAvg: shipData.pvp.frags / battles,
-            shipScore: shipScore,
-            lastPlayed: shipData.last_battle_time,
-            lastUpdated: Date.now()
+            battles: sql`excluded.battles`,
+            wins: sql`excluded.wins`,
+            survived: sql`excluded.survived`,
+            winRate: sql`excluded.winRate`,
+            survivalRate: sql`excluded.survivalRate`,
+            damageAvg: sql`excluded.damageAvg`,
+            fragAvg: sql`excluded.fragAvg`,
+            shipScore: sql`excluded.shipScore`,
+            lastPlayed: sql`excluded.lastPlayed`,
+            lastUpdated: sql`excluded.lastUpdated`
           }
         });
-      
-      // Update ship history
-      await updateShipHistory(
-        shipData.ship_id, 
-        accountId, 
-        clan.id.toString(),
-        {
-          battles: battles,
-          winRate: winRate,
-          damageAvg: damageAvg,
-          shipScore: shipScore
-        }
-      );
+    }
+    
+    // Batch insert/update ship history
+    if (shipHistoryEntries.length > 0) {
+      await db.insert(statHistory)
+        .values(shipHistoryEntries)
+        .onConflictDoUpdate({
+          target: [statHistory.shipId, statHistory.playerId, statHistory.clanId, statHistory.date],
+          set: {
+            battles: sql`excluded.battles`,
+            winRate: sql`excluded.winRate`,
+            damageAvg: sql`excluded.damageAvg`,
+            shipScore: sql`excluded.shipScore`
+          }
+        });
     }
     
     Logger.debug(`Updated data for player ${accountId} in clan ${clan.tag}`);
   } catch (error) {
     Logger.error(`Error updating player data (${accountId}) for clan ${clan.tag}:`, error);
     throw error;
-  }
-}
-
-/**
- * Update ship history for tracking over time
- * @param shipId Ship ID
- * @param playerId Player ID
- * @param clanId Clan ID
- * @param stats Ship statistics
- */
-async function updateShipHistory(
-  shipId: string, 
-  playerId: string,
-  clanId: string,
-  stats: { battles: number; winRate: number; damageAvg: number; shipScore: number; }
-): Promise<void> {
-  try {
-    // Get the current date (midnight)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const timestamp = today.getTime();
-    
-    // Insert or update history record for today
-    await db.insert(statHistory)
-      .values({
-        shipId: shipId,
-        playerId: playerId,
-        clanId: clanId,
-        date: timestamp,
-        battles: stats.battles,
-        winRate: stats.winRate,
-        damageAvg: stats.damageAvg,
-        shipScore: stats.shipScore
-      })
-      .onConflictDoUpdate({
-        target: [statHistory.shipId, statHistory.playerId, statHistory.clanId, statHistory.date],
-        set: {
-          battles: stats.battles,
-          winRate: stats.winRate,
-          damageAvg: stats.damageAvg,
-          shipScore: stats.shipScore
-        }
-      });
-  } catch (error) {
-    Logger.error(`Error updating ship history (${shipId}, ${playerId}, ${clanId}):`, error);
-    // Don't throw - this is a non-critical operation
   }
 }
 
@@ -379,3 +379,6 @@ export async function addPlayerToClan(
     Logger.error(`Initial data update failed for player ${finalPlayerName} in clan ${clanTag}:`, error);
   }
 }
+
+// Add necessary SQL import
+import { sql } from "drizzle-orm";

@@ -11,6 +11,8 @@ export class WargamingApiClient {
   private region: string;
   private apiBase: string;
   private clan?: ClanConfig;
+  private rateLimitDelay = 500; // ms between requests
+  private lastRequestTime = 0;
   
   /**
    * Create a new Wargaming API client
@@ -49,6 +51,9 @@ export class WargamingApiClient {
    * @returns API response data
    */
   async request<T>(endpoint: string, params: Record<string, any> = {}): Promise<T> {
+    // Implement rate limiting
+    await this.respectRateLimit();
+    
     // Add API key to params
     const requestParams = {
       application_id: this.apiKey,
@@ -66,12 +71,13 @@ export class WargamingApiClient {
     
     try {
       const response = await fetch(url);
+      this.lastRequestTime = Date.now();
       
       if (!response.ok) {
         throw new Error(`API responded with status: ${response.status}`);
       }
       
-      const data = await response.json() as { status: string; error?: { message: string }; data: T };
+      const data = await response.json() as { status: string; error?: { message: string; code?: number }; data: T };
       
       if (data.status !== "ok") {
         throw new Error(`API error: ${data.error?.message || 'Unknown error'}`);
@@ -81,6 +87,49 @@ export class WargamingApiClient {
     } catch (error) {
       Logger.error(`API request failed: ${endpoint}`, error);
       throw error;
+    }
+  }
+  
+  /**
+   * Make a request to the WG API with automatic retry for rate limits
+   * @param endpoint API endpoint
+   * @param params Request parameters
+   * @param retries Number of retries allowed
+   * @returns API response data
+   */
+  async requestWithRetry<T>(endpoint: string, params: Record<string, any> = {}, retries = 3): Promise<T> {
+    try {
+      return await this.request<T>(endpoint, params);
+    } catch (error) {
+      // Check if error is rate limiting related (HTTP 429)
+      if (
+        error instanceof Error && 
+        error.message.includes('status: 429') && 
+        retries > 0
+      ) {
+        // Exponential backoff: wait longer for each retry
+        const delay = Math.pow(2, 4 - retries) * 1000;
+        Logger.warn(`Rate limited by WG API. Retrying in ${delay}ms (${retries} retries left)`);
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return this.requestWithRetry<T>(endpoint, params, retries - 1);
+      }
+      
+      // For other errors, or if we've run out of retries, rethrow
+      throw error;
+    }
+  }
+  
+  /**
+   * Ensure we're respecting rate limits
+   */
+  private async respectRateLimit(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.rateLimitDelay) {
+      const delayNeeded = this.rateLimitDelay - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, delayNeeded));
     }
   }
   
@@ -100,6 +149,7 @@ export class WargamingApiClient {
     }
     
     try {
+      await this.respectRateLimit();
       Logger.debug(`Fetching clan battles for clan ${this.clan?.tag || 'unknown'}, team ${team}`);
       
       const response = await fetch(url, {
@@ -109,8 +159,23 @@ export class WargamingApiClient {
         }
       });
       
+      this.lastRequestTime = Date.now();
+      
       if (!response.ok) {
-        throw new Error(`API responded with status: ${response.status}`);
+        const status = response.status;
+        let errorMessage = `API responded with status: ${status}`;
+        
+        try {
+          // Try to get more detailed error info
+          const errorData = await response.json();
+          if (errorData.error) {
+            errorMessage += ` - ${errorData.error.message || JSON.stringify(errorData.error)}`;
+          }
+        } catch {
+          // Ignore parsing errors for the error response
+        }
+        
+        throw new Error(errorMessage);
       }
       
       return await response.json();
@@ -125,7 +190,7 @@ export class WargamingApiClient {
    * @param username Player username to search for
    */
   async findPlayerByName(username: string): Promise<any[]> {
-    return this.request<any[]>('account/list', { search: username });
+    return this.requestWithRetry<any[]>('account/list', { search: username });
   }
   
   /**
@@ -133,7 +198,7 @@ export class WargamingApiClient {
    * @param accountId Player account ID
    */
   async getPlayerById(accountId: string): Promise<any> {
-    const data = await this.request<Record<string, any>>('account/info', { account_id: accountId });
+    const data = await this.requestWithRetry<Record<string, any>>('account/info', { account_id: accountId });
     return data[accountId];
   }
   
@@ -142,7 +207,7 @@ export class WargamingApiClient {
    * @param accountId Player account ID
    */
   async getPlayerShips(accountId: string): Promise<any[]> {
-    const data = await this.request<Record<string, any[]>>('ships/stats', { account_id: accountId });
+    const data = await this.requestWithRetry<Record<string, any[]>>('ships/stats', { account_id: accountId });
     return data[accountId] || [];
   }
   
@@ -151,7 +216,7 @@ export class WargamingApiClient {
    * @param shipId Ship ID
    */
   async getShipInfo(shipId: string): Promise<any> {
-    const data = await this.request<Record<string, any>>('encyclopedia/ships', { ship_id: shipId });
+    const data = await this.requestWithRetry<Record<string, any>>('encyclopedia/ships', { ship_id: shipId });
     return data[shipId];
   }
   
@@ -160,7 +225,7 @@ export class WargamingApiClient {
    * @param clanId Clan ID
    */
   async getClanInfo(clanId: number): Promise<any> {
-    const data = await this.request<Record<string, any>>('clans/info', { clan_id: clanId });
+    const data = await this.requestWithRetry<Record<string, any>>('clans/info', { clan_id: clanId });
     return data[clanId.toString()];
   }
   
@@ -169,7 +234,7 @@ export class WargamingApiClient {
    * @param clanTag Clan tag to search for
    */
   async findClanByTag(clanTag: string): Promise<any[]> {
-    return this.request<any[]>('clans/list', { search: clanTag });
+    return this.requestWithRetry<any[]>('clans/list', { search: clanTag });
   }
 }
 
