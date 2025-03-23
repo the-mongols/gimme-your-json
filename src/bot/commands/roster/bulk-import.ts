@@ -158,6 +158,7 @@ export default {
         results.valid++;
         validRows.push({
           id: playerId,
+          clanId: "1000072593", // Default clan ID
           username: playerName,
           discordId: discordId,
           clanTag: clanTag || null,

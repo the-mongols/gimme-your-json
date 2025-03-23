@@ -1,121 +1,154 @@
-// src/bot/init.ts
-/**
- * Centralized initialization for the Discord bot
- * Runs all necessary database migrations and setup before starting the bot
- */
-
-import { Logger } from '../utils/logger.js';
-import { db } from '../database/db.js';
-import runMultiClanMigration from '../database/drizzle/migrations/multi-clan-migration.js';
-import initServerConfig from '../database/drizzle/migrations/init-server-config.js';
-import { Config } from '../utils/config.js';
+// src/database/drizzle/migrations/init-server-config.ts
+import { db } from "../../db.js";
+import { Logger } from "../../../utils/logger.js";
+import { sql } from "drizzle-orm";
+import { serverConfig, channelConfig, roleConfig } from "../schema-server-config.js";
+import { Config } from "../../../utils/config.js";
+import type { ClanConfig } from "../../../config/clans.js";
 
 /**
- * Initialize the bot
- * - Run database migrations
- * - Set up necessary tables
- * - Verify environment configuration
+ * Initialize server configuration tables
+ * Creates tables if they don't exist
  */
-export async function initializeBot(): Promise<void> {
+async function initServerConfig(): Promise<void> {
+  Logger.info("Initializing server configuration tables...");
+  
   try {
-    Logger.info('Starting bot initialization...');
+    // Check if tables already exist
+    const hasServerConfigTable = await checkTableExists('server_config');
+    const hasChannelConfigTable = await checkTableExists('channel_config');
+    const hasRoleConfigTable = await checkTableExists('role_config');
     
-    // 1. Verify essential environment variables
-    verifyEnvironment();
-    
-    // 2. Run migrations
-    await runDatabaseMigrations();
-    
-    // 3. Initialize server configuration
-    await initServerConfig();
-    
-    // 4. Verify clan configurations
-    verifyClanConfigurations();
-    
-    Logger.info('Bot initialization complete');
-  } catch (error) {
-    Logger.error('Bot initialization failed:', error);
-    throw error;
-  }
-}
-
-/**
- * Verify that essential environment variables are set
- */
-function verifyEnvironment(): void {
-  Logger.info('Verifying environment configuration...');
-  
-  const requiredVars = [
-    'DISCORD_BOT_TOKEN',
-    'DISCORD_CLIENT_ID',
-    'WG_API_KEY'
-  ];
-  
-  const missingVars = requiredVars.filter(varName => !process.env[varName]);
-  
-  if (missingVars.length > 0) {
-    throw new Error(`Missing required environment variables: ${missingVars.join(', ')}`);
-  }
-  
-  Logger.info('Environment configuration verified');
-}
-
-/**
- * Run all necessary database migrations
- */
-async function runDatabaseMigrations(): Promise<void> {
-  Logger.info('Running database migrations...');
-  
-  // Check if database file exists and has tables
-  try {
-    const tablesExist = await db.get(/*sql*/`
-      SELECT name FROM sqlite_master WHERE type='table' AND name='players'
-    `);
-    
-    if (tablesExist) {
-      // Run multi-clan migration to update existing database
-      Logger.info('Database exists, running multi-clan migration...');
-      await runMultiClanMigration();
-    } else {
-      // Database is new or empty, inform the user
-      Logger.info('New database detected, migrations will create schema');
-      // The other initialization functions will create the tables
+    // If all tables exist, we're done
+    if (hasServerConfigTable && hasChannelConfigTable && hasRoleConfigTable) {
+      Logger.info("Server configuration tables already exist. Skipping initialization.");
+      return;
     }
     
-    Logger.info('Database migrations completed');
+    // Start a transaction to create all tables
+    await db.transaction(async (tx) => {
+      // Create server_config table if it doesn't exist
+      if (!hasServerConfigTable) {
+        Logger.info("Creating server_config table...");
+        await tx.run(sql`
+          CREATE TABLE IF NOT EXISTS server_config (
+            server_id TEXT PRIMARY KEY,
+            default_clan_tag TEXT,
+            admin_role_id TEXT,
+            moderator_role_id TEXT,
+            log_channel_id TEXT,
+            updated_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )
+        `);
+      }
+      
+      // Create channel_config table if it doesn't exist
+      if (!hasChannelConfigTable) {
+        Logger.info("Creating channel_config table...");
+        await tx.run(sql`
+          CREATE TABLE IF NOT EXISTS channel_config (
+            channel_id TEXT PRIMARY KEY,
+            server_id TEXT NOT NULL,
+            clan_tag TEXT,
+            type TEXT,
+            settings TEXT,
+            updated_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )
+        `);
+      }
+      
+      // Create role_config table if it doesn't exist
+      if (!hasRoleConfigTable) {
+        Logger.info("Creating role_config table...");
+        await tx.run(sql`
+          CREATE TABLE IF NOT EXISTS role_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            server_id TEXT NOT NULL,
+            role_id TEXT NOT NULL,
+            clan_tag TEXT,
+            permissions TEXT,
+            updated_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+          )
+        `);
+        
+        // Create index for server_id in role_config
+        await tx.run(sql`CREATE INDEX IF NOT EXISTS idx_role_config_server_id ON role_config(server_id)`);
+      }
+      
+      Logger.info("Server configuration tables created successfully");
+    });
+    
+    // Check if we need to create default configurations
+    await createDefaultConfigurations();
   } catch (error) {
-    Logger.error('Database migration failed:', error);
+    Logger.error("Error initializing server configuration tables:", error);
     throw error;
   }
 }
 
 /**
- * Verify clan configurations
+ * Create default configurations for clans
  */
-function verifyClanConfigurations(): void {
-  Logger.info('Verifying clan configurations...');
+async function createDefaultConfigurations(): Promise<void> {
+  Logger.info("Creating default server configurations...");
   
-  const clans = Object.values(Config.clans);
-  
-  if (clans.length === 0) {
-    throw new Error('No clans configured. At least one clan must be configured.');
+  try {
+    // Get the clans from config
+    const clans = Object.values(Config.clans) as ClanConfig[];
+    
+    if (clans.length === 0) {
+      Logger.warn("No clans configured. Skipping default configurations.");
+      return;
+    }
+    
+    // Create a default server config for each clan
+    for (const clan of clans) {
+      // Use clan ID as the server ID for default configs
+      const serverId = `default_${clan.tag.toLowerCase()}`;
+      
+      // Check if this default config already exists
+      const existingConfig = await db.select()
+        .from(serverConfig)
+        .where(sql`server_id = ${serverId}`)
+        .get();
+      
+      if (!existingConfig) {
+        // Create default config
+        await db.insert(serverConfig).values({
+          serverId,
+          defaultClanTag: clan.tag,
+          adminRoleId: null,
+          moderatorRoleId: null,
+          logChannelId: null,
+          updatedAt: Date.now(),
+          createdAt: Date.now()
+        });
+        
+        Logger.info(`Created default server configuration for clan ${clan.tag}`);
+      }
+    }
+  } catch (error) {
+    Logger.error("Error creating default configurations:", error);
+    // Don't throw - this is a non-critical operation
   }
-  
-  // Log warning for any clans missing cookies (required for clan battles API)
-  const clansWithoutCookies = clans.filter(clan => !clan.cookies);
-  if (clansWithoutCookies.length > 0) {
-    const clanTags = clansWithoutCookies.map(clan => clan.tag).join(', ');
-    Logger.warn(`The following clans are missing cookies configuration and won't be able to fetch clan battles: ${clanTags}`);
-  }
-  
-  // Verify default clan is in the configuration
-  const defaultClanExists = clans.some(clan => clan.tag === Config.defaultClan.tag);
-  if (!defaultClanExists) {
-    throw new Error(`Default clan "${Config.defaultClan.tag}" is not in the clan configuration.`);
-  }
-  
-  Logger.info(`Verified ${clans.length} clan configurations`);
 }
 
-// Export init function
-export default initializeBot;
+/**
+ * Check if a table exists in the database
+ * @param tableName Table name to check
+ * @returns True if the table exists
+ */
+async function checkTableExists(tableName: string): Promise<boolean> {
+  const result = await db.get(`
+    SELECT name FROM sqlite_master 
+    WHERE type='table' AND name='${tableName}'
+  `);
+  
+  return !!result;
+}
+
+// Export the initialization function
+export default initServerConfig;

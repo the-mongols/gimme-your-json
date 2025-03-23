@@ -1,7 +1,7 @@
 // src/services/server-config.ts
 import { db } from "../database/db.js";
 import { serverConfig, channelConfig, roleConfig } from "../database/drizzle/schema-server-config.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { Config } from "../utils/config.js";
 import { Logger } from "../utils/logger.js";
 
@@ -103,7 +103,7 @@ export class ServerConfigService {
   ): Promise<ServerConfigData> {
     try {
       // Check if server config exists
-      const configExists = await db.select({ exists: db.sql`1` })
+      const configExists = await db.select()
         .from(serverConfig)
         .where(eq(serverConfig.serverId, serverId))
         .get();
@@ -121,11 +121,13 @@ export class ServerConfigService {
         });
       } else {
         // Update existing config
+        const updateValues: Record<string, any> = {
+          ...updates,
+          updatedAt: Date.now()
+        };
+        
         await db.update(serverConfig)
-          .set({
-            ...updates,
-            updatedAt: Date.now()
-          })
+          .set(updateValues)
           .where(eq(serverConfig.serverId, serverId));
       }
       
@@ -190,12 +192,22 @@ export class ServerConfigService {
         return null;
       }
       
+      // Parse settings JSON if it exists
+      let settingsObj: Record<string, any> | null = null;
+      if (config.settings) {
+        try {
+          settingsObj = JSON.parse(config.settings as string);
+        } catch {
+          settingsObj = null;
+        }
+      }
+      
       return {
         channelId: config.channelId,
         serverId: config.serverId,
         clanTag: config.clanTag,
         type: config.type,
-        settings: config.settings ? JSON.parse(config.settings) : null
+        settings: settingsObj
       };
     } catch (error) {
       Logger.error(`Error getting channel config for ${channelId}:`, error);
@@ -212,8 +224,11 @@ export class ServerConfigService {
     try {
       const { channelId, serverId, clanTag, type, settings } = channelData;
       
+      // Convert settings object to string if it exists
+      const settingsStr = settings ? JSON.stringify(settings) : null;
+      
       // Check if channel config exists
-      const configExists = await db.select({ exists: db.sql`1` })
+      const configExists = await db.select()
         .from(channelConfig)
         .where(eq(channelConfig.channelId, channelId))
         .get();
@@ -225,7 +240,7 @@ export class ServerConfigService {
           serverId,
           clanTag,
           type,
-          settings: settings ? JSON.stringify(settings) : null,
+          settings: settingsStr,
           createdAt: Date.now(),
           updatedAt: Date.now()
         });
@@ -236,7 +251,7 @@ export class ServerConfigService {
             serverId,
             clanTag,
             type,
-            settings: settings ? JSON.stringify(settings) : null,
+            settings: settingsStr,
             updatedAt: Date.now()
           })
           .where(eq(channelConfig.channelId, channelId));
@@ -261,13 +276,25 @@ export class ServerConfigService {
         .where(eq(roleConfig.serverId, serverId))
         .all();
       
-      return roles.map(role => ({
-        id: role.id,
-        serverId: role.serverId,
-        roleId: role.roleId,
-        clanTag: role.clanTag,
-        permissions: role.permissions ? JSON.parse(role.permissions) : null
-      }));
+      return roles.map(role => {
+        // Parse permissions JSON if it exists
+        let permissionsArray: string[] | null = null;
+        if (role.permissions) {
+          try {
+            permissionsArray = JSON.parse(role.permissions as string);
+          } catch {
+            permissionsArray = null;
+          }
+        }
+        
+        return {
+          id: role.id,
+          serverId: role.serverId,
+          roleId: role.roleId,
+          clanTag: role.clanTag,
+          permissions: permissionsArray
+        };
+      });
     } catch (error) {
       Logger.error(`Error getting server roles for ${serverId}:`, error);
       return [];
@@ -292,13 +319,25 @@ export class ServerConfigService {
         )
         .all();
       
-      return roles.map(role => ({
-        id: role.id,
-        serverId: role.serverId,
-        roleId: role.roleId,
-        clanTag: role.clanTag,
-        permissions: role.permissions ? JSON.parse(role.permissions) : null
-      }));
+      return roles.map(role => {
+        // Parse permissions JSON if it exists
+        let permissionsArray: string[] | null = null;
+        if (role.permissions) {
+          try {
+            permissionsArray = JSON.parse(role.permissions as string);
+          } catch {
+            permissionsArray = null;
+          }
+        }
+        
+        return {
+          id: role.id,
+          serverId: role.serverId,
+          roleId: role.roleId,
+          clanTag: role.clanTag,
+          permissions: permissionsArray
+        };
+      });
     } catch (error) {
       Logger.error(`Error getting clan roles for ${clanTag} in server ${serverId}:`, error);
       return [];
@@ -314,6 +353,9 @@ export class ServerConfigService {
     try {
       const { id, serverId, roleId, clanTag, permissions } = roleData;
       
+      // Convert permissions array to string if it exists
+      const permissionsStr = permissions ? JSON.stringify(permissions) : null;
+      
       if (id) {
         // Update existing role
         await db.update(roleConfig)
@@ -321,7 +363,7 @@ export class ServerConfigService {
             serverId,
             roleId,
             clanTag,
-            permissions: permissions ? JSON.stringify(permissions) : null,
+            permissions: permissionsStr,
             updatedAt: Date.now()
           })
           .where(eq(roleConfig.id, id));
@@ -336,34 +378,44 @@ export class ServerConfigService {
           throw new Error(`Role with ID ${id} not found after update`);
         }
         
+        // Parse permissions JSON if it exists
+        let permissionsArray: string[] | null = null;
+        if (updatedRole.permissions) {
+          try {
+            permissionsArray = JSON.parse(updatedRole.permissions as string);
+          } catch {
+            permissionsArray = null;
+          }
+        }
+        
         return {
           id: updatedRole.id,
           serverId: updatedRole.serverId,
           roleId: updatedRole.roleId,
           clanTag: updatedRole.clanTag,
-          permissions: updatedRole.permissions ? JSON.parse(updatedRole.permissions) : null
+          permissions: permissionsArray
         };
       } else {
         // Create new role
-        const newRole = {
-          serverId,
-          roleId,
-          clanTag,
-          permissions: permissions ? JSON.stringify(permissions) : null,
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-        
         const insertResult = await db.insert(roleConfig)
-          .values(newRole)
+          .values({
+            serverId,
+            roleId,
+            clanTag,
+            permissions: permissionsStr,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          })
           .returning();
           
         if (!insertResult || insertResult.length === 0) {
           throw new Error('Failed to insert role configuration');
         }
         
+        const newRole = insertResult[0];
+        
         return {
-          id: insertResult[0].id,
+          id: newRole.id,
           serverId,
           roleId,
           clanTag,

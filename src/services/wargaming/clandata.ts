@@ -1,8 +1,10 @@
 // Service for fetching Clan Battles data from Wargaming API
-import { ClanBattlesResponse, ParsedBattleData, ParsedPlayerData } from '../../types/wowsApi';
-import { db } from '../../database/db';
-import { clanBattles, playerBattles } from '../../database/drizzle/schema';
+import type { ClanBattlesResponse, ParsedBattleData, ParsedPlayerData } from '../../types/wowsAPI.js';
+import { db } from '../../database/db.js';
+import { clanBattles, clanBattleTeams, clanBattlePlayers } from '../../database/drizzle/schema.js';
 import { eq } from 'drizzle-orm';
+import { Logger } from '../../utils/logger.js';
+import { Config } from '../../utils/config.js';
 
 // These would normally be in environment variables
 const WOWS_CLAN_ID = 1000072593; // PN31 clan ID
@@ -82,14 +84,14 @@ export function parseClanBattlesData(battles: ClanBattlesResponse): {
       map_id: battle.map_id,
       finished_at: battle.finished_at,
       season_number: battle.season_number,
-      team_id: ourTeam.id,
+      team_id: ourTeam.id || 0,
       clan_id: ourTeam.clan_id,
       clan_tag: ourTeam.claninfo.tag,
       result: ourTeam.result,
-      league: ourTeam.league,
-      division: ourTeam.division,
-      division_rating: ourTeam.division_rating,
-      rating_delta: ourTeam.rating_delta
+      league: ourTeam.league || 0,
+      division: ourTeam.division || 0,
+      division_rating: ourTeam.division_rating || 0,
+      rating_delta: ourTeam.rating_delta || 0
     };
     
     battleData.push(parsedBattle);
@@ -133,10 +135,26 @@ export async function saveClanBattlesData(
     await db.transaction(async (tx) => {
       // Process battles
       for (const battle of battleData) {
+        // Conform to database schema
+        const battleRecord = {
+          id: battle.battle_id.toString(),
+          clanId: battle.clan_id.toString(),
+          clusterId: 0, // Placeholder
+          finishedAt: battle.finished_at,
+          realm: "na", // Default
+          seasonNumber: battle.season_number,
+          mapId: battle.map_id,
+          mapName: battle.map_name,
+          arenaId: 0, // Placeholder
+          createdAt: Date.now()
+        };
+        
         // Check if battle already exists
         const existingBattle = await tx.select()
           .from(clanBattles)
-          .where(eq(clanBattles.battle_id, battle.battle_id))
+          .where(
+            eq(clanBattles.id, battleRecord.id)
+          )
           .get();
         
         if (existingBattle) {
@@ -145,28 +163,55 @@ export async function saveClanBattlesData(
         }
         
         // Insert new battle
-        await tx.insert(clanBattles).values(battle);
+        await tx.insert(clanBattles).values(battleRecord);
         console.log(`Saved battle ${battle.battle_id}`);
-      }
-      
-      // Process player data
-      for (const player of playerData) {
-        // Check if player battle entry already exists
-        const existingPlayerBattle = await tx.select()
-          .from(playerBattles)
-          .where(
-            eq(playerBattles.battle_id, player.battle_id) &&
-            eq(playerBattles.player_id, player.player_id)
-          )
-          .get();
         
-        if (existingPlayerBattle) {
-          console.log(`Player ${player.player_name} battle ${player.battle_id} already exists, skipping...`);
+        // Insert team data
+        const teamRecord = {
+          battleId: battle.battle_id.toString(),
+          clanId: battle.clan_id.toString(),
+          teamNumber: 1, // Default
+          result: battle.result,
+          league: battle.league,
+          division: battle.division,
+          divisionRating: battle.division_rating,
+          ratingDelta: battle.rating_delta,
+          wgClanId: battle.clan_id,
+          clanTag: battle.clan_tag,
+          clanName: "" // Placeholder
+        };
+        
+        const teamInsert = await tx.insert(clanBattleTeams)
+          .values(teamRecord)
+          .returning();
+        
+        const teamId = teamInsert[0]?.id;
+        
+        if (!teamId) {
+          console.error(`Failed to insert team for battle ${battle.battle_id}`);
           continue;
         }
         
-        // Insert new player battle entry
-        await tx.insert(playerBattles).values(player);
+        // Find the corresponding player data for this battle
+        const battlePlayers = playerData.filter(p => p.battle_id === battle.battle_id);
+        
+        // Insert player data
+        for (const player of battlePlayers) {
+          const playerRecord = {
+            battleId: player.battle_id.toString(),
+            clanId: battle.clan_id.toString(),
+            teamId: teamId,
+            playerId: player.player_id.toString(),
+            playerName: player.player_name,
+            survived: player.survived ? 1 : 0,
+            shipId: player.ship_id.toString(),
+            shipName: player.ship_name,
+            shipLevel: player.ship_tier,
+            isClanMember: 1 // Default for our clan members
+          };
+          
+          await tx.insert(clanBattlePlayers).values(playerRecord);
+        }
       }
     });
     

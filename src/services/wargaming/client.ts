@@ -92,8 +92,8 @@ export class WargamingApiClient {
   async getClanBattles(team: 1 | 2 = 1): Promise<unknown> {
     const url = `https://clans.worldofwarships.com/api/ladder/battles/?team=${team}`;
     
-    // Use clan-specific cookies if available, otherwise use global config
-    const cookies = this.clan?.cookies || Config.wargaming.cookies;
+    // Use clan-specific cookies if available
+    const cookies = this.clan?.cookies;
     
     if (!cookies) {
       throw new Error(`No cookies available for clan ${this.clan?.tag || 'unknown'}`);

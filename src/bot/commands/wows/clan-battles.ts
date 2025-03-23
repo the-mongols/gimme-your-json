@@ -1,6 +1,6 @@
 // src/bot/commands/wows/clan-battles.ts
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import type { ChatInputCommandInteraction } from 'discord.js';
+import type { ChatInputCommandInteraction, SlashCommandSubcommandBuilder } from 'discord.js';
 import { db } from '../../../database/db.js';
 import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../../database/drizzle/schema.js";
 import { desc, eq, and, inArray, like } from 'drizzle-orm';
@@ -9,37 +9,50 @@ import { Logger } from '../../../utils/logger.js';
 import { getAllClanTags } from '../../../config/clans.js';
 import { Config } from '../../../utils/config.js';
 
+// Create the command properly
+const command = new SlashCommandBuilder()
+  .setName('clan-battles')
+  .setDescription('Show clan battles statistics');
+
+// Add the clan option
+command.addStringOption(option =>
+  option.setName('clan')
+    .setDescription('Clan to show stats for (defaults to server default)')
+    .setRequired(false)
+    .addChoices(...getAllClanTags().map(tag => ({ name: tag, value: tag })))
+);
+
+// Add subcommands directly (no group needed)
+command.addSubcommand((subcommand: SlashCommandSubcommandBuilder) =>
+  subcommand
+    .setName('stats')
+    .setDescription('Show overall clan battles statistics')
+);
+
+command.addSubcommand((subcommand: SlashCommandSubcommandBuilder) =>
+  subcommand
+    .setName('player')
+    .setDescription('Show player statistics')
+    .addStringOption(option =>
+      option.setName('name')
+        .setDescription('Player name')
+        .setRequired(true))
+);
+
+command.addSubcommand((subcommand: SlashCommandSubcommandBuilder) =>
+  subcommand
+    .setName('recent')
+    .setDescription('Show recent battles')
+    .addIntegerOption(option =>
+      option.setName('count')
+        .setDescription('Number of battles to show')
+        .setRequired(false))
+);
+
 export default {
   category: 'wows',
   cooldown: 5,
-  data: new SlashCommandBuilder()
-    .setName('clan-battles')
-    .setDescription('Show clan battles statistics')
-    .addStringOption(option =>
-      option.setName('clan')
-        .setDescription('Clan to show stats for (defaults to server default)')
-        .setRequired(false)
-        .addChoices(...getAllClanTags().map(tag => ({ name: tag, value: tag }))))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('stats')
-        .setDescription('Show overall clan battles statistics'))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('player')
-        .setDescription('Show player statistics')
-        .addStringOption(option =>
-          option.setName('name')
-            .setDescription('Player name')
-            .setRequired(true)))
-    .addSubcommand(subcommand =>
-      subcommand
-        .setName('recent')
-        .setDescription('Show recent battles')
-        .addIntegerOption(option =>
-          option.setName('count')
-            .setDescription('Number of battles to show')
-            .setRequired(false))),
+  data: command,
   
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply();
@@ -65,6 +78,7 @@ export default {
       return;
     }
     
+    // Get subcommand
     const subcommand = interaction.options.getSubcommand();
     
     try {
