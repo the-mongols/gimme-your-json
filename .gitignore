@@ -33,3 +33,12 @@ todolist.txt
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files
+.env
+.env.*
