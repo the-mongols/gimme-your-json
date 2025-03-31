@@ -1,21 +1,32 @@
 // src/database/drizzle/migrations/migrate.ts
-import { join } from "path";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Database } from "bun:sqlite";
 import { Logger } from "../../../utils/logger.js";
 
-// Get the absolute path to your project root
-const projectRoot = process.cwd();
+// Get current file's directory for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Get project root (3 levels up from current file)
+const projectRoot = resolve(__dirname, "../../..");
 
 // Create path to drizzle folder (which contains meta folder)
-const drizzleFolderPath = join(projectRoot, "src", "database", "drizzle");
+const drizzleFolderPath = resolve(projectRoot, "src", "database", "drizzle");
 
 // Database path
-const dbPath = join(projectRoot, "sqlite.db");
+const dbPath = resolve(projectRoot, "sqlite.db");
 Logger.info(`Running migrations on database: ${dbPath}`);
 
 try {
+  // Check if migrations folder exists using Bun's file API
+  const migrationsExists = await Bun.file(drizzleFolderPath).exists();
+  if (!migrationsExists) {
+    throw new Error(`Migrations folder not found at: ${drizzleFolderPath}`);
+  }
+  
   // Database connection
   const sqlite = new Database(dbPath);
   const db = drizzle(sqlite);

@@ -1,13 +1,13 @@
 # gimme-your-json
 
-A modern Discord bot making use of Discord v14.18.0, Bun 1.2.5 runtime, and Drizzle ORM in order to provide roster management and lineup generation for the [PN] Penetration Nation clan in World of Warships. Features include slash commands, database operations, and API connections with Wargaming API as well as Google API (Sheets and App Scripts).
+A modern Discord bot making use of Discord v14.18.0, Bun 1.2.7 runtime, and Drizzle ORM in order to provide roster management and lineup generation for the [PN] Penetration Nation clan in World of Warships. Features include slash commands, database operations, and API connections with Wargaming API + Google API (Sheets and App Scripts).
 
 
 ## Setup ---SUBJECT TO CHANGE---
 
 ### Prerequisites
 
-- This project was created using `bun init` in bun v1.2.5. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+- This project was created using `bun init` in bun v1.2.7. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
 - Node.js v16.9 or higher (for Discord.js compatibility)
 - A Discord bot token and application ID
 

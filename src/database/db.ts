@@ -1,15 +1,26 @@
 // src/database/db.ts
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Database } from "bun:sqlite";
-import { join } from "path";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
 import { Logger } from "../utils/logger.js";
 
-// Get project root
-const projectRoot = process.cwd();
+// Get current file's directory for ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-// Database connection, config, and queries
-const dbPath = join(projectRoot, "sqlite.db");
+// Get project root (2 levels up from current file)
+const projectRoot = resolve(__dirname, "../..");
+
+// Database path
+const dbPath = resolve(projectRoot, "sqlite.db");
 Logger.info(`Using database at: ${dbPath}`);
+
+// Check if database file exists
+const dbExists = await Bun.file(dbPath).exists();
+if (!dbExists) {
+  Logger.info(`Database file doesn't exist yet at ${dbPath}, will be created on first use`);
+}
 
 // Create SQLite connection
 const sqlite = new Database(dbPath);

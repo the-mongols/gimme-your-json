@@ -1,44 +1,52 @@
-# dependencies (bun install)
+# Bun specific
+.bun
+
+# Dependencies
 node_modules
+package-lock.json
+yarn.lock
+bun.lockb
 
-# output
-out
+# Build output
 dist
-*.tgz
+build
+out
 
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-todolist.txt
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
-
-# IntelliJ based IDEs
-.idea
-
-# Finder (MacOS) folder config
-.DS_Store
-
-# Database files
+# SQLite databases
 *.db
+*.db-journal
 *.sqlite
 *.sqlite3
+*.sqlite-journal
 
-# Environment files
+# Environment variables
 .env
 .env.*
+!.env.example
+
+# IDE and editor files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Misc
+.cache
+.temp
+.tmp
+coverage
+todolist.txt
