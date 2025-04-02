@@ -36,6 +36,17 @@ export class Logger {
     outputToFile: false
   };
   
+  // Store original console methods to prevent recursion
+  private static originalConsole: OriginalConsole = {
+    log: console.log,
+    info: console.info,
+    warn: console.warn,
+    error: console.error
+  };
+  
+  // Track if console is overridden
+  private static consoleOverridden = false;
+  
   /**
    * Configure logger options
    */
@@ -123,7 +134,8 @@ export class Logger {
   static debug(message: string, ...args: any[]): void {
     if (Logger.level <= LogLevel.DEBUG) {
       const formattedMessage = Logger.formatLogMessage(LogLevel.DEBUG, message);
-      console.log(formattedMessage, ...args);
+      // Use original console.log to prevent recursion
+      Logger.originalConsole.log(formattedMessage, ...args);
     }
   }
   
@@ -133,7 +145,8 @@ export class Logger {
   static info(message: string, ...args: any[]): void {
     if (Logger.level <= LogLevel.INFO) {
       const formattedMessage = Logger.formatLogMessage(LogLevel.INFO, message);
-      console.log(formattedMessage, ...args);
+      // Use original console.log to prevent recursion
+      Logger.originalConsole.log(formattedMessage, ...args);
     }
   }
   
@@ -143,7 +156,8 @@ export class Logger {
   static warn(message: string, ...args: any[]): void {
     if (Logger.level <= LogLevel.WARN) {
       const formattedMessage = Logger.formatLogMessage(LogLevel.WARN, message);
-      console.warn(formattedMessage, ...args);
+      // Use original console.warn to prevent recursion
+      Logger.originalConsole.warn(formattedMessage, ...args);
     }
   }
   
@@ -155,9 +169,10 @@ export class Logger {
       const formattedMessage = Logger.formatLogMessage(LogLevel.ERROR, message);
       
       if (error instanceof Error) {
-        console.error(formattedMessage, error.stack, ...args);
+        // Use original console.error to prevent recursion
+        Logger.originalConsole.error(formattedMessage, error.stack, ...args);
       } else {
-        console.error(formattedMessage, error, ...args);
+        Logger.originalConsole.error(formattedMessage, error, ...args);
       }
     }
   }
@@ -186,18 +201,30 @@ export class Logger {
    * @returns The original console methods for restoration
    */
   static overrideConsole(): OriginalConsole {
-    const originalConsole: OriginalConsole = {
+    // If already overridden, don't override again
+    if (Logger.consoleOverridden) {
+      return Logger.originalConsole;
+    }
+    
+    // Save original console methods
+    Logger.originalConsole = {
       log: console.log,
       info: console.info,
       warn: console.warn,
       error: console.error
     };
     
+    // Flag that we've overridden the console
+    Logger.consoleOverridden = true;
+    
+    // Override console methods to use our logger
     console.log = (...args: any[]) => {
       if (Logger.level <= LogLevel.INFO) {
         const message = args[0]?.toString() || '';
         const restArgs = args.slice(1);
-        Logger.info(message, ...restArgs);
+        // Use original console to prevent recursion
+        const formattedMessage = Logger.formatLogMessage(LogLevel.INFO, message);
+        Logger.originalConsole.log(formattedMessage, ...restArgs);
       }
     };
     
@@ -205,7 +232,9 @@ export class Logger {
       if (Logger.level <= LogLevel.INFO) {
         const message = args[0]?.toString() || '';
         const restArgs = args.slice(1);
-        Logger.info(message, ...restArgs);
+        // Use original console to prevent recursion
+        const formattedMessage = Logger.formatLogMessage(LogLevel.INFO, message);
+        Logger.originalConsole.info(formattedMessage, ...restArgs);
       }
     };
     
@@ -213,7 +242,9 @@ export class Logger {
       if (Logger.level <= LogLevel.WARN) {
         const message = args[0]?.toString() || '';
         const restArgs = args.slice(1);
-        Logger.warn(message, ...restArgs);
+        // Use original console to prevent recursion
+        const formattedMessage = Logger.formatLogMessage(LogLevel.WARN, message);
+        Logger.originalConsole.warn(formattedMessage, ...restArgs);
       }
     };
     
@@ -222,21 +253,30 @@ export class Logger {
         const message = args[0]?.toString() || '';
         const error = args.length > 1 && args[1] instanceof Error ? args[1] : undefined;
         const restArgs = error ? args.slice(2) : args.slice(1);
-        Logger.error(message, error, ...restArgs);
+        // Use original console to prevent recursion
+        const formattedMessage = Logger.formatLogMessage(LogLevel.ERROR, message);
+        if (error instanceof Error) {
+          Logger.originalConsole.error(formattedMessage, error.stack, ...restArgs);
+        } else {
+          Logger.originalConsole.error(formattedMessage, error, ...restArgs);
+        }
       }
     };
     
     // Return the original console methods in case we need to restore them
-    return originalConsole;
+    return Logger.originalConsole;
   }
   
   /**
    * Restore original console methods after overriding
    */
-  static restoreConsole(originalConsole: OriginalConsole): void {
-    console.log = originalConsole.log;
-    console.info = originalConsole.info;
-    console.warn = originalConsole.warn;
-    console.error = originalConsole.error;
+  static restoreConsole(): void {
+    if (Logger.consoleOverridden) {
+      console.log = Logger.originalConsole.log;
+      console.info = Logger.originalConsole.info;
+      console.warn = Logger.originalConsole.warn;
+      console.error = Logger.originalConsole.error;
+      Logger.consoleOverridden = false;
+    }
   }
 }

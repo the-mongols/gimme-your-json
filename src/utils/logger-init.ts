@@ -39,7 +39,10 @@ export function initializeLogger(): void {
     logFilePath: process.env.LOG_FILE_PATH
   });
   
+  Logger.info(`Logger initialized at ${Logger.getLevelName(logLevel)} level`);
+  
   // Override console methods in development mode unless explicitly disabled
+  // This should happen AFTER initial logger setup to avoid recursion issues
   const isDevelopment = process.env.NODE_ENV !== 'production';
   const shouldOverrideConsole = process.env.OVERRIDE_CONSOLE === 'true' || 
     (isDevelopment && process.env.OVERRIDE_CONSOLE !== 'false');
@@ -48,8 +51,6 @@ export function initializeLogger(): void {
     Logger.overrideConsole();
     Logger.info('Console logging methods have been overridden by Logger utility');
   }
-  
-  Logger.info(`Logger initialized at ${Logger.getLevelName(logLevel)} level`);
 }
 
 /**
@@ -59,7 +60,6 @@ export function registerGlobalErrorHandlers(): void {
   // Handle uncaught exceptions
   process.on('uncaughtException', (error) => {
     Logger.error('Uncaught Exception:', error);
-    console.error(error); // Ensure it gets logged even if Logger is broken
     // Give time for logs to be written, then exit
     setTimeout(() => process.exit(1), 500);
   });
@@ -67,7 +67,6 @@ export function registerGlobalErrorHandlers(): void {
   // Handle unhandled promise rejections
   process.on('unhandledRejection', (reason, promise) => {
     Logger.error('Unhandled Promise Rejection:', reason);
-    console.error('Unhandled Promise Rejection:', reason); // Ensure it gets logged
     // We don't exit here as it's less catastrophic than uncaughtException
   });
   

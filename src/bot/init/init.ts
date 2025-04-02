@@ -53,9 +53,15 @@ function verifyEnvironment(): void {
   
   const requiredVars = [
     'DISCORD_BOT_TOKEN',
-    'DISCORD_CLIENT_ID',
-    'WG_API_KEY'
+    'DISCORD_CLIENT_ID'
   ];
+  
+  // Make WG_API_KEY only required in production
+  if (process.env.NODE_ENV === 'production') {
+    requiredVars.push('WG_API_KEY');
+  } else if (!process.env.WG_API_KEY) {
+    Logger.warn('WG_API_KEY not set. Some functionality related to Wargaming API will be limited.');
+  }
   
   const missingVars = requiredVars.filter(varName => !process.env[varName]);
   
@@ -104,7 +110,12 @@ function verifyClanConfigurations(): void {
   const clans = Object.values(Config.clans);
   
   if (clans.length === 0) {
-    throw new Error('No clans configured. At least one clan must be configured.');
+    // In development, this is not a fatal error
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('No clans configured. At least one clan must be configured.');
+    } else {
+      Logger.warn('No clans configured. Using placeholder clan configuration for development.');
+    }
   }
   
   // Log warning for any clans missing cookies (required for clan battles API)
@@ -116,8 +127,13 @@ function verifyClanConfigurations(): void {
   
   // Verify default clan is in the configuration
   const defaultClanExists = clans.some(clan => clan.tag === Config.defaultClan.tag);
-  if (!defaultClanExists) {
-    throw new Error(`Default clan "${Config.defaultClan.tag}" is not in the clan configuration.`);
+  if (!defaultClanExists && clans.length > 0) {
+    // In development, just warn about this
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`Default clan "${Config.defaultClan.tag}" is not in the clan configuration.`);
+    } else {
+      Logger.warn(`Default clan "${Config.defaultClan.tag}" is not in the clan configuration.`);
+    }
   }
   
   Logger.info(`Verified ${clans.length} clan configurations`);

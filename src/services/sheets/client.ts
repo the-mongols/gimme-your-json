@@ -4,6 +4,7 @@ import { players, ships } from '../../database/drizzle/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { Config } from '../../utils/config.js';
 import { Logger } from '../../utils/logger.js';
+import { handleError, ErrorCode } from '../../utils/errors.js';
 
 // Google API client for sheets
 async function generateJWT(email: string, privateKey: string): Promise<string> {
@@ -49,7 +50,11 @@ async function uploadToGoogleSheets(
     const privateKey = Config.google.privateKey;
     
     if (!serviceAccountEmail || !privateKey) {
-      throw new Error('Google API credentials missing. Check environment variables.');
+      throw handleError(
+        'Google Sheets upload failed',
+        'Google API credentials missing. Check environment variables.',
+        ErrorCode.CONFIG_MISSING_VALUE
+      );
     }
     
     // Create JWT token for authentication
@@ -75,12 +80,18 @@ async function uploadToGoogleSheets(
     
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(`Google Sheets API error: ${error.error?.message || response.statusText}`);
+      throw handleError(
+        'Google Sheets API error',
+        error.error?.message || response.statusText,
+        ErrorCode.API_REQUEST_FAILED
+      );
     }
     
     return true;
   } catch (error) {
-    Logger.error('Error uploading to Google Sheets:', error);
+    if (!(error instanceof Error && error.name === 'BotError')) {
+      throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
+    }
     throw error;
   }
 }
@@ -116,12 +127,15 @@ export async function uploadDataToSheets(): Promise<{
       }
       
       // Upload data for this clan
-      await uploadClanDataToSheet(clan.tag, sheetId);
+      const success = await uploadClanDataToSheet(clan.tag, sheetId);
       results.push({
         clan: clan.tag,
-        success: true
+        success
       });
-      totalSuccess++;
+      
+      if (success) {
+        totalSuccess++;
+      }
     } catch (error) {
       Logger.error(`Failed to upload data for clan ${clan.tag}:`, error);
       results.push({
@@ -150,7 +164,11 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
     
     const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
     if (!clan) {
-      throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+      throw handleError(
+        `Google Sheets upload failed`,
+        `Clan with tag "${clanTag}" not found in configuration`,
+        ErrorCode.CLAN_NOT_FOUND
+      );
     }
     
     // Get player data with ships
@@ -172,6 +190,13 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
     return true;
   } catch (error) {
     Logger.error(`Error updating Google Sheets for clan ${clanTag}:`, error);
+    if (!(error instanceof Error && error.name === 'BotError')) {
+      throw handleError(
+        `Error updating Google Sheets for clan ${clanTag}`,
+        error,
+        ErrorCode.API_REQUEST_FAILED
+      );
+    }
     throw error;
   }
 }
@@ -182,32 +207,41 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
  * @returns Players with their ships data
  */
 async function getPlayersWithShips(clanId: string) {
-  // Get all players for this clan
-  const allPlayers = await db.select()
-    .from(players)
-    .where(eq(players.clanId, clanId));
-  
-  // For each player, get their ships
-  const playersWithShips = [];
-  
-  for (const player of allPlayers) {
-    // Query ships for this player - use composite key
-    const playerShips = await db.select()
-      .from(ships)
-      .where(
-        and(
-          eq(ships.playerId, player.id),
-          eq(ships.clanId, clanId)
-        )
-      );
+  try {
+    // Get all players for this clan
+    const allPlayers = await db.select()
+      .from(players)
+      .where(eq(players.clanId, clanId));
     
-    playersWithShips.push({
-      ...player,
-      ships: playerShips
-    });
+    if (allPlayers.length === 0) {
+      Logger.warn(`No players found for clan ID ${clanId}`);
+      return [];
+    }
+    
+    // For each player, get their ships
+    const playersWithShips = [];
+    
+    for (const player of allPlayers) {
+      // Query ships for this player - use composite key
+      const playerShips = await db.select()
+        .from(ships)
+        .where(
+          and(
+            eq(ships.playerId, player.id),
+            eq(ships.clanId, clanId)
+          )
+        );
+      
+      playersWithShips.push({
+        ...player,
+        ships: playerShips
+      });
+    }
+    
+    return playersWithShips;
+  } catch (error) {
+    throw handleError(`Failed to get players with ships for clan ID ${clanId}`, error, ErrorCode.DB_QUERY_FAILED);
   }
-  
-  return playersWithShips;
 }
 
 /**
