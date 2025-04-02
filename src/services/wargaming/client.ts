@@ -1,7 +1,9 @@
 // src/services/wargaming/client.ts
 import { Config } from '../../utils/config.js';
 import { Logger } from '../../utils/logger.js';
+import { handleError, ErrorCode } from '../../utils/errors.js';
 import type { ClanConfig } from '../../config/clans.js';
+import type { ClanBattlesResponse } from '../../types/wowsAPI.js';
 
 /**
  * Wargaming API Client class for making API requests
@@ -85,8 +87,7 @@ export class WargamingApiClient {
       
       return data.data;
     } catch (error) {
-      Logger.error(`API request failed: ${endpoint}`, error);
-      throw error;
+      throw handleError(`API request to ${endpoint} failed`, error, ErrorCode.API_REQUEST_FAILED);
     }
   }
   
@@ -138,14 +139,19 @@ export class WargamingApiClient {
    * @param team Team number (1 or 2)
    * @returns Clan battles data
    */
-  async getClanBattles(team: 1 | 2 = 1): Promise<unknown> {
+  async getClanBattles(team: 1 | 2 = 1): Promise<ClanBattlesResponse> {
     const url = `https://clans.worldofwarships.com/api/ladder/battles/?team=${team}`;
     
     // Use clan-specific cookies if available
     const cookies = this.clan?.cookies;
     
     if (!cookies) {
-      throw new Error(`No cookies available for clan ${this.clan?.tag || 'unknown'}`);
+      throw handleError(
+        `Cannot fetch clan battles data for ${this.clan?.tag || 'unknown'}`,
+        'Missing authentication cookies',
+        ErrorCode.API_AUTHENTICATION_FAILED,
+        'Cannot access clan battles data: missing authentication'
+      );
     }
     
     try {
@@ -162,25 +168,28 @@ export class WargamingApiClient {
       this.lastRequestTime = Date.now();
       
       if (!response.ok) {
-        const status = response.status;
-        let errorMessage = `API responded with status: ${status}`;
-        
-        try {
-          // Try to get more detailed error info
-          const errorData = await response.json();
-          if (errorData.error) {
-            errorMessage += ` - ${errorData.error.message || JSON.stringify(errorData.error)}`;
-          }
-        } catch {
-          // Ignore parsing errors for the error response
+        // Handle authentication errors specifically
+        if (response.status === 401 || response.status === 403) {
+          throw handleError(
+            `Authentication failed for clan battles API`,
+            `Status: ${response.status}`,
+            ErrorCode.API_AUTHENTICATION_FAILED,
+            'Authentication to clan battles API failed. Cookies may have expired.'
+          );
         }
         
-        throw new Error(errorMessage);
+        throw new Error(`API responded with status: ${response.status}`);
       }
       
-      return await response.json();
+      return await response.json() as ClanBattlesResponse;
     } catch (error) {
-      Logger.error(`Failed to fetch clan battles data for clan ${this.clan?.tag || 'unknown'}`, error);
+      if (!(error instanceof Error && error.name === 'BotError')) {
+        throw handleError(
+          `Failed to fetch clan battles data for clan ${this.clan?.tag || 'unknown'}`, 
+          error,
+          ErrorCode.API_REQUEST_FAILED
+        );
+      }
       throw error;
     }
   }
@@ -236,6 +245,17 @@ export class WargamingApiClient {
   async findClanByTag(clanTag: string): Promise<any[]> {
     return this.requestWithRetry<any[]>('clans/list', { search: clanTag });
   }
+  
+  /**
+   * Attempt to refresh authentication cookies (placeholder for future implementation)
+   * @returns Whether the refresh was successful
+   */
+  async refreshAuthentication(): Promise<boolean> {
+    Logger.warn(`Cookie refresh not implemented yet for clan ${this.clan?.tag || 'unknown'}`);
+    // This would be implemented with your authentication system
+    // For now, return false to indicate refresh failed
+    return false;
+  }
 }
 
 /**
@@ -245,6 +265,15 @@ export class WargamingApiClient {
  */
 export function getApiClientForClan(clanTag: string): WargamingApiClient {
   const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+  
+  if (!clan) {
+    throw handleError(
+      `Cannot create API client`,
+      `Clan with tag "${clanTag}" not found in configuration`,
+      ErrorCode.CLAN_NOT_FOUND
+    );
+  }
+  
   return new WargamingApiClient(clan);
 }
 

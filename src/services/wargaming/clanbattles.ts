@@ -4,64 +4,10 @@ import { clanBattles, clanBattleTeams, clanBattlePlayers } from "../../database/
 import { eq, and, inArray, gte, lte, desc } from "drizzle-orm";
 import { Logger } from "../../utils/logger.js";
 import { Config } from "../../utils/config.js";
+import { handleError, ErrorCode } from "../../utils/errors.js";
 import { wgApi, getApiClientForClan } from "./client.js";
 import type { ClanConfig } from "../../config/clans.js";
-
-// Interface for the battle data structure
-interface Battle {
-  cluster_id: number;
-  finished_at: string;
-  realm: string;
-  season_number: number;
-  map_id: number;
-  map: {
-    name: string;
-  };
-  arena_id: number;
-  id: number;
-  teams: Team[];
-}
-
-interface Team {
-  result: string;
-  stage: any;
-  players: Player[];
-  division?: number;
-  league?: number;
-  division_rating?: number;
-  team_number?: number;
-  rating_delta?: number;
-  id?: number;
-  clan_id?: number;
-  claninfo?: {
-    members_count: number;
-    realm: string;
-    disbanded: boolean;
-    hex_color: string;
-    tag: string;
-    name: string;
-    id: number;
-    color: string;
-  };
-}
-
-interface Player {
-  survived: boolean;
-  nickname: string;
-  result_id: number;
-  name: string;
-  ship: {
-    level: number;
-    name: string;
-    icons: {
-      dead: string;
-      alive: string;
-    };
-  };
-  vehicle_id: number;
-  spa_id: number;
-  clan_id: number;
-}
+import type { ClanBattlesResponse, Battle, Team, Player } from "../../types/wowsAPI.js";
 
 /**
  * Fetch clan battles data for a specific clan
@@ -79,7 +25,11 @@ export async function fetchClanBattlesData(clanTag?: string): Promise<{
     : Config.defaultClan;
     
   if (!clan) {
-    throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+    throw handleError(
+      "Failed to fetch clan battles data",
+      `Clan with tag "${clanTag}" not found in configuration`,
+      ErrorCode.CLAN_NOT_FOUND
+    );
   }
   
   try {
@@ -89,15 +39,25 @@ export async function fetchClanBattlesData(clanTag?: string): Promise<{
     const apiClient = getApiClientForClan(clan.tag);
     
     // Fetch data for team 1 and team 2
-    const team1Data = await apiClient.getClanBattles(1) as Record<string, Battle>;
-    const team2Data = await apiClient.getClanBattles(2) as Record<string, Battle>;
+    let team1Data: Battle[] = [];
+    let team2Data: Battle[] = [];
     
-    // Process the data
-    const team1Battles = Object.values(team1Data);
-    const team2Battles = Object.values(team2Data);
+    try {
+      team1Data = Object.values(await apiClient.getClanBattles(1));
+    } catch (error) {
+      Logger.error(`Error fetching team 1 data for clan ${clan.tag}:`, error);
+      // Continue to team 2 even if team 1 fails
+    }
+    
+    try {
+      team2Data = Object.values(await apiClient.getClanBattles(2));
+    } catch (error) {
+      Logger.error(`Error fetching team 2 data for clan ${clan.tag}:`, error);
+      // Continue processing team 1 data even if team 2 fails
+    }
     
     // Merge and deduplicate battles
-    const allBattles = [...team1Battles, ...team2Battles];
+    const allBattles = [...team1Data, ...team2Data];
     const uniqueBattleIds = new Set<number>();
     const uniqueBattles: Battle[] = [];
     
@@ -147,6 +107,12 @@ export async function fetchClanBattlesData(clanTag?: string): Promise<{
       
       // Process teams
       for (const team of battle.teams) {
+        // Skip teams without claninfo
+        if (!team.claninfo) {
+          Logger.warn(`Team without claninfo in battle ${battleIdStr}, skipping...`);
+          continue;
+        }
+        
         // Insert team data
         const teamInsert = await db.insert(clanBattleTeams).values({
           battleId: battleIdStr,
@@ -203,8 +169,7 @@ export async function fetchClanBattlesData(clanTag?: string): Promise<{
       clanMemberPlayers: clanMemberPlayersCount
     };
   } catch (error) {
-    Logger.error(`Error fetching clan battles data for ${clan.tag}:`, error);
-    throw error;
+    throw handleError(`Error fetching clan battles data for ${clan?.tag}`, error, ErrorCode.API_REQUEST_FAILED);
   }
 }
 
@@ -265,7 +230,11 @@ export async function getClanMemberPlayerStats(clanTag: string, startDate?: Date
   const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
   
   if (!clan) {
-    throw new Error(`Clan with tag "${clanTag}" not found in configuration`);
+    throw handleError(
+      `Failed to get clan member player stats`,
+      `Clan with tag "${clanTag}" not found in configuration`,
+      ErrorCode.CLAN_NOT_FOUND
+    );
   }
   
   try {
@@ -310,7 +279,7 @@ export async function getClanMemberPlayerStats(clanTag: string, startDate?: Date
       )
       .all();
     
-    // Calculate stats
+    // Calculate statistics
     const playerStats: Record<string, {
       playerId: string,
       playerName: string,
@@ -328,7 +297,12 @@ export async function getClanMemberPlayerStats(clanTag: string, startDate?: Date
       // Get team data to determine if it's a win
       const team = await db.select()
         .from(clanBattleTeams)
-        .where(eq(clanBattleTeams.id, entry.teamId))
+        .where(
+          and(
+            eq(clanBattleTeams.id, entry.teamId),
+            eq(clanBattleTeams.clanId, clan.id.toString())
+          )
+        )
         .get();
       
       const isWin = team?.result === "win";
@@ -368,7 +342,90 @@ export async function getClanMemberPlayerStats(clanTag: string, startDate?: Date
     
     return Object.values(playerStats);
   } catch (error) {
-    Logger.error(`Error getting ${clanTag} player stats:`, error);
-    throw error;
+    throw handleError(`Error getting ${clanTag} player stats`, error, ErrorCode.DB_QUERY_FAILED);
+  }
+}
+
+/**
+ * Export clan battles data to JSON
+ * @param clanTag Clan tag to export data for
+ * @param limit Number of battles to export (most recent first)
+ * @returns JSON data of battles
+ */
+export async function exportClanBattlesAsJson(clanTag: string, limit: number = 50): Promise<string> {
+  const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
+  
+  if (!clan) {
+    throw handleError(
+      `Failed to export clan battles data`,
+      `Clan with tag "${clanTag}" not found in configuration`,
+      ErrorCode.CLAN_NOT_FOUND
+    );
+  }
+  
+  try {
+    Logger.info(`Exporting clan battles data for ${clan.tag} (limit: ${limit})...`);
+    
+    // Get the most recent battles
+    const battles = await db.select()
+      .from(clanBattles)
+      .where(eq(clanBattles.clanId, clan.id.toString()))
+      .orderBy(desc(clanBattles.finishedAt))
+      .limit(limit)
+      .all();
+      
+    if (battles.length === 0) {
+      return JSON.stringify({ battles: [], teams: [], players: [] });
+    }
+    
+    const battleIds = battles.map(b => b.id);
+    
+    // Get teams for these battles
+    const teams = await db.select()
+      .from(clanBattleTeams)
+      .where(
+        and(
+          inArray(clanBattleTeams.battleId, battleIds),
+          eq(clanBattleTeams.clanId, clan.id.toString())
+        )
+      )
+      .all();
+      
+    const teamIds = teams.map(t => t.id).filter(id => id !== undefined) as number[];
+    
+    // Get players for these teams
+    const players = await db.select()
+      .from(clanBattlePlayers)
+      .where(
+        and(
+          inArray(clanBattlePlayers.teamId, teamIds),
+          eq(clanBattlePlayers.clanId, clan.id.toString())
+        )
+      )
+      .all();
+      
+    // Create data structure for export
+    const exportData = {
+      clan: {
+        tag: clan.tag,
+        id: clan.id,
+        name: clan.name
+      },
+      battles,
+      teams,
+      players,
+      metadata: {
+        exportDate: new Date().toISOString(),
+        recordCount: {
+          battles: battles.length,
+          teams: teams.length,
+          players: players.length
+        }
+      }
+    };
+    
+    return JSON.stringify(exportData, null, 2);
+  } catch (error) {
+    throw handleError(`Error exporting clan battles data for ${clanTag}`, error, ErrorCode.DB_QUERY_FAILED);
   }
 }

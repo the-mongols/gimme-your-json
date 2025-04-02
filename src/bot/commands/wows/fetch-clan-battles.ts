@@ -1,8 +1,9 @@
 // src/bot/commands/wows/fetch-clan-battles.ts
-import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, AttachmentBuilder } from 'discord.js';
 import type { ChatInputCommandInteraction } from 'discord.js';
-import { fetchClanBattlesData, fetchAllClanBattlesData } from '../../../services/wargaming/clanbattles.js';
+import { fetchClanBattlesData, fetchAllClanBattlesData, exportClanBattlesAsJson } from '../../../services/wargaming/clanbattles.js';
 import { ServerConfigService } from '../../../services/server-config.js';
+import { handleCommandError } from '../../../utils/errors.js';
 import { Logger } from '../../../utils/logger.js';
 import { getAllClanTags } from '../../../config/clans.js';
 import { Config } from '../../../utils/config.js';
@@ -21,12 +22,22 @@ export default {
         .addChoices(
           { name: "All Clans", value: "all" },
           ...getAllClanTags().map(tag => ({ name: tag, value: tag }))
-        )),
+        ))
+    .addBooleanOption(option => 
+      option.setName('export')
+        .setDescription('Export data as JSON file')
+        .setRequired(false))
+    .addIntegerOption(option =>
+      option.setName('limit')
+        .setDescription('Max battles to export (default: 50, only used with export option)')
+        .setRequired(false)
+        .setMinValue(1)
+        .setMaxValue(500)),
   
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
-    await interaction.deferReply();
-    
     try {
+      await interaction.deferReply();
+      
       // Ensure we have a guild context
       if (!interaction.guildId) {
         await interaction.editReply({
@@ -37,6 +48,8 @@ export default {
       
       // Get the clan option
       const clanOption = interaction.options.getString('clan');
+      const exportOption = interaction.options.getBoolean('export') || false;
+      const limitOption = interaction.options.getInteger('limit') || 50;
       
       // Get server default clan if no option specified
       let clanTag: string | null = null;
@@ -49,6 +62,23 @@ export default {
       await interaction.editReply('Fetching clan battles data, please wait...');
       
       const startTime = Date.now();
+      
+      // Handle export option
+      if (exportOption && clanTag) {
+        const jsonData = await exportClanBattlesAsJson(clanTag, limitOption);
+        const buffer = Buffer.from(jsonData, 'utf-8');
+        const attachment = new AttachmentBuilder(buffer, {
+          name: `${clanTag.toLowerCase()}_clan_battles.json`
+        });
+        
+        const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+        
+        await interaction.editReply({
+          content: `Exported clan battles data for ${clanTag} in ${duration}s`,
+          files: [attachment]
+        });
+        return;
+      }
       
       // Handle single clan or all clans
       if (clanTag) {
@@ -108,8 +138,7 @@ export default {
         await interaction.editReply({ content: null, embeds: [embed] });
       }
     } catch (error) {
-      Logger.error('Error fetching clan battles data:', error);
-      await interaction.editReply(`Error fetching clan battles data: ${(error as Error).message}`);
+      await handleCommandError(interaction, error);
     }
   }
 };

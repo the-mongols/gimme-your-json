@@ -1,7 +1,7 @@
 // src/database/drizzle/migrations/migrate.ts
 import { fileURLToPath } from "url";
 import { dirname, resolve } from "path";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import { migrate as drizzleMigrate } from "drizzle-orm/bun-sqlite/migrator";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { Database } from "bun:sqlite";
 import { Logger } from "../../../utils/logger.js";
@@ -18,36 +18,50 @@ const drizzleFolderPath = resolve(projectRoot, "src", "database", "drizzle");
 
 // Database path
 const dbPath = resolve(projectRoot, "sqlite.db");
-Logger.info(`Running migrations on database: ${dbPath}`);
 
-try {
-  // Check if migrations folder exists using Bun's file API
-  const migrationsExists = await Bun.file(drizzleFolderPath).exists();
-  if (!migrationsExists) {
-    throw new Error(`Migrations folder not found at: ${drizzleFolderPath}`);
-  }
-  
-  // Database connection
-  const sqlite = new Database(dbPath);
-  const db = drizzle(sqlite);
+/**
+ * Run the database migrations
+ */
+export async function migrate(): Promise<void> {
+  Logger.info(`Running migrations on database: ${dbPath}`);
 
-  // Run migration with absolute path
-  Logger.info(`Applying migrations from: ${drizzleFolderPath}`);
-  migrate(db, { migrationsFolder: drizzleFolderPath });
+  try {
+    // Check if migrations folder exists using Bun's file API
+    const migrationsExists = await Bun.file(drizzleFolderPath).exists();
+    if (!migrationsExists) {
+      throw new Error(`Migrations folder not found at: ${drizzleFolderPath}`);
+    }
+    
+    // Database connection
+    const sqlite = new Database(dbPath);
+    const db = drizzle(sqlite);
 
-  Logger.info("Migration complete!");
-  
-  // If this is run as a script, exit when done
-  if (import.meta.url === `file://${process.argv[1]}`) {
-    process.exit(0);
-  }
-} catch (error) {
-  Logger.error("Migration failed:", error);
-  
-  // If this is run as a script, exit with error code
-  if (import.meta.url === `file://${process.argv[1]}`) {
-    process.exit(1);
-  } else {
-    throw error;
+    // Run migration with absolute path
+    Logger.info(`Applying migrations from: ${drizzleFolderPath}`);
+    drizzleMigrate(db, { migrationsFolder: drizzleFolderPath });
+
+    Logger.info("Migration complete!");
+  } catch (error) {
+    Logger.error("Migration failed:", error);
+    
+    // If this is run as a script, exit with error code
+    if (import.meta.url === `file://${process.argv[1]}`) {
+      process.exit(1);
+    } else {
+      throw error;
+    }
   }
 }
+
+// Run migration if this file is executed directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  migrate()
+    .then(() => process.exit(0))
+    .catch(error => {
+      console.error("Migration script failed:", error);
+      process.exit(1);
+    });
+}
+
+// Export for importing in other modules
+export default migrate;

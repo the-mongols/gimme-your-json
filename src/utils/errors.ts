@@ -107,6 +107,33 @@ export async function handleCommandError(
 }
 
 /**
+ * Standard error handler for async functions
+ * Logs the error and returns a BotError
+ * @param operation Operation description for the error message
+ * @param error The caught error object
+ * @param code Error code to use
+ * @param userMessage Optional user-friendly message
+ * @returns A BotError with the appropriate message and code
+ */
+export function handleError(
+  operation: string,
+  error: unknown,
+  code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
+  userMessage?: string
+): BotError {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const fullMessage = `${operation}: ${errorMessage}`;
+  
+  Logger.error(fullMessage, error);
+  
+  return new BotError(
+    fullMessage,
+    code,
+    userMessage || `Failed to ${operation.toLowerCase()}`
+  );
+}
+
+/**
  * Create a database error
  * @param message Error message
  * @param userMessage Optional user-friendly message
@@ -159,5 +186,33 @@ export function createPlayerNotFoundError(identifier: string, clanTag?: string):
     `Player "${identifier}" not found${contextMsg}`,
     ErrorCode.PLAYER_NOT_FOUND,
     `Player "${identifier}" not found${contextMsg}. Please check the identifier or add the player first.`
+  );
+}
+
+/**
+ * Create a command execution error
+ * @param commandName Name of the command that failed
+ * @param error The underlying error
+ * @returns BotError with command execution failed code
+ */
+export function createCommandError(commandName: string, error: unknown): BotError {
+  const message = error instanceof Error ? error.message : String(error);
+  return new BotError(
+    `Error executing command ${commandName}: ${message}`,
+    ErrorCode.COMMAND_EXECUTION_FAILED,
+    `There was an error while executing the ${commandName} command`
+  );
+}
+
+/**
+ * Create a permission denied error
+ * @param permission The permission that was missing
+ * @returns BotError with permission denied code
+ */
+export function createPermissionError(permission: string): BotError {
+  return new BotError(
+    `Missing permission: ${permission}`,
+    ErrorCode.COMMAND_PERMISSION_DENIED,
+    `You don't have the required permission: ${permission}`
   );
 }
