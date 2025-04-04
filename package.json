@@ -18,9 +18,9 @@
     "db:studio": "bunx drizzle-kit studio",
     "db:generate": "bunx drizzle-kit generate",
     "db:push": "bunx drizzle-kit push:sqlite",
-    "update:data": "bun run src/utils/cli/update-data.ts --all",
-    "update:battles": "bun run src/utils/cli/update-battles.ts --all",
-    "export:sheets": "bun run src/utils/cli/export-sheets.ts --all",
+    "update:data": "bun run src/utils/cli/update-data.ts",
+    "update:battles": "bun run src/utils/cli/update-battles.ts",
+    "export:sheets": "bun run src/utils/cli/export-sheets.ts",
     "log:debug": "LOG_LEVEL=DEBUG bun run dev",
     "log:info": "LOG_LEVEL=INFO bun run dev",
     "log:warn": "LOG_LEVEL=WARN bun run dev"
