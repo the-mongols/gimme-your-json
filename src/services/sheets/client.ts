@@ -5,30 +5,65 @@ import { eq, and } from 'drizzle-orm';
 import { Config } from '../../utils/config.js';
 import { Logger } from '../../utils/logger.js';
 import { handleError, ErrorCode } from '../../utils/errors.js';
+import crypto from 'crypto';
+import { promisify } from 'util';
 
-// Google API client for sheets
+// Async sign function for JWT
+const asyncSign = promisify(crypto.sign);
+
+/**
+ * Generate a JWT token for Google Sheets API authentication
+ * @param email Service account email
+ * @param privateKey Private key for signing
+ * @returns JWT token
+ */
 async function generateJWT(email: string, privateKey: string): Promise<string> {
-  // For a production application, you would implement proper JWT generation
-  // This is a simplified placeholder
-  const header = {
-    alg: 'RS256',
-    typ: 'JWT'
-  };
-  
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    iss: email,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: now + 3600,
-    iat: now
-  };
-  
-  // In a real implementation, you'd use a JWT library
-  Logger.debug('JWT would be generated with:', { header, payload });
-  
-  // Return a placeholder - replace with actual implementation
-  return 'placeholder_jwt_token';
+  try {
+    Logger.debug('Generating JWT for Google Sheets API');
+    Logger.debug(`Service Account Email: ${email}`);
+    Logger.debug(`Private Key Length: ${privateKey.length} characters`);
+
+    // Current timestamp
+    const now = Math.floor(Date.now() / 1000);
+    const expiry = now + 3600; // Token valid for 1 hour
+
+    // JWT Header (Base64Url encoded)
+    const header = Buffer.from(JSON.stringify({
+      alg: 'RS256',
+      typ: 'JWT'
+    })).toString('base64url');
+
+    // JWT Payload (Base64Url encoded)
+    const payload = Buffer.from(JSON.stringify({
+      iss: email,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      aud: 'https://oauth2.googleapis.com/token',
+      exp: expiry,
+      iat: now
+    })).toString('base64url');
+
+    // Signing input
+    const signingInput = `${header}.${payload}`;
+
+    // Sign the input with the private key
+    const privateKeyObject = crypto.createPrivateKey(privateKey);
+    const signature = await asyncSign('sha256', Buffer.from(signingInput), privateKeyObject);
+    const encodedSignature = signature.toString('base64url');
+
+    // Construct the JWT
+    const jwt = `${signingInput}.${encodedSignature}`;
+
+    Logger.debug('JWT generated successfully');
+    return jwt;
+  } catch (error) {
+    Logger.error('JWT generation failed:', error);
+    throw handleError(
+      'Failed to generate JWT',
+      error,
+      ErrorCode.API_AUTHENTICATION_FAILED,
+      'Authentication token generation failed'
+    );
+  }
 }
 
 /**
@@ -45,26 +80,29 @@ async function uploadToGoogleSheets(
 ): Promise<boolean> {
   try {
     Logger.info(`Uploading data to Google Sheets: ${sheetName}`);
-    
+    Logger.debug(`Sheet ID: ${sheetId}`);
+    Logger.debug(`Values to upload: ${JSON.stringify(values.slice(0, 5))}`); // Log first 5 rows
+
     const serviceAccountEmail = Config.google.serviceAccountEmail;
     const privateKey = Config.google.privateKey;
     
     if (!serviceAccountEmail || !privateKey) {
+      Logger.error('Google API credentials missing');
       throw handleError(
         'Google Sheets upload failed',
         'Google API credentials missing. Check environment variables.',
         ErrorCode.CONFIG_MISSING_VALUE
       );
     }
-    
-    // Create JWT token for authentication
+
+    // Generate access token
     const token = await generateJWT(serviceAccountEmail, privateKey);
-    
-    // Format values for the Sheets API
+
+    // Prepare request body
     const body = {
       values: values
     };
-    
+
     // Make the API request
     const response = await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${sheetName}!A1:Z${values.length + 1}?valueInputOption=USER_ENTERED`,
@@ -77,18 +115,25 @@ async function uploadToGoogleSheets(
         body: JSON.stringify(body)
       }
     );
+
+    // Log response details
+    Logger.debug(`API Response Status: ${response.status}`);
     
     if (!response.ok) {
-      const error = await response.json();
+      const errorBody = await response.text();
+      Logger.error(`Google Sheets API Error: ${errorBody}`);
+      
       throw handleError(
         'Google Sheets API error',
-        error.error?.message || response.statusText,
+        errorBody,
         ErrorCode.API_REQUEST_FAILED
       );
     }
-    
+
     return true;
   } catch (error) {
+    Logger.error('Full error during Google Sheets upload:', error);
+    
     if (!(error instanceof Error && error.name === 'BotError')) {
       throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
     }
@@ -161,25 +206,30 @@ export async function uploadDataToSheets(): Promise<{
 export async function uploadClanDataToSheet(clanTag: string, sheetId: string): Promise<boolean> {
   try {
     Logger.info(`Uploading data for clan ${clanTag} to Google Sheets...`);
-    
+    Logger.debug(`Using Sheet ID: ${sheetId}`);
+
     const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
     if (!clan) {
+      Logger.error(`Clan ${clanTag} not found in configuration`);
       throw handleError(
         `Google Sheets upload failed`,
         `Clan with tag "${clanTag}" not found in configuration`,
         ErrorCode.CLAN_NOT_FOUND
       );
     }
-    
+
     // Get player data with ships
     const playersData = await getPlayersWithShips(clan.id.toString());
-    
+    Logger.debug(`Found ${playersData.length} players with ships`);
+
     // Prepare data for player stats sheet
     const playerRows = preparePlayerData(playersData);
+    Logger.debug(`Prepared ${playerRows.length} player rows`);
     
     // Prepare data for ship stats sheet
     const shipRows = prepareShipData(playersData);
-    
+    Logger.debug(`Prepared ${shipRows.length} ship rows`);
+
     // Upload player data
     await uploadToGoogleSheets(sheetId, `${clanTag}_PlayerStats`, playerRows);
     
@@ -190,13 +240,6 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
     return true;
   } catch (error) {
     Logger.error(`Error updating Google Sheets for clan ${clanTag}:`, error);
-    if (!(error instanceof Error && error.name === 'BotError')) {
-      throw handleError(
-        `Error updating Google Sheets for clan ${clanTag}`,
-        error,
-        ErrorCode.API_REQUEST_FAILED
-      );
-    }
     throw error;
   }
 }

@@ -8,23 +8,19 @@
     "lint": "eslint --ext .ts,.js src/",
     "typecheck": "tsc --noEmit",
     "verify": "bun run typecheck && bun run lint",
-    
     "deploy": "bun run src/bot/commands/registration/register-commands.ts",
     "deployglobal": "bun run src/bot/commands/registration/register-commands.ts --global",
     "clearguild": "bun run src/bot/commands/registration/clear-commands.ts",
     "clearglobal": "bun run src/bot/commands/registration/clear-commands.ts --global",
-    
     "db:migrate": "bun run src/database/drizzle/migrations/migrate.ts",
     "db:check": "bun run check-tables.ts",
     "db:seed": "bun run src/database/seed.ts",
     "db:studio": "bunx drizzle-kit studio",
     "db:generate": "bunx drizzle-kit generate",
     "db:push": "bunx drizzle-kit push:sqlite",
-    
     "update:data": "bun run src/utils/cli/update-data.ts --all",
     "update:battles": "bun run src/utils/cli/update-battles.ts --all",
     "export:sheets": "bun run src/utils/cli/export-sheets.ts --all",
-    
     "log:debug": "LOG_LEVEL=DEBUG bun run dev",
     "log:info": "LOG_LEVEL=INFO bun run dev",
     "log:warn": "LOG_LEVEL=WARN bun run dev"
@@ -36,10 +32,11 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/figlet": "^1.7.0",
+    "@types/node": "^22.14.0",
     "@vscode/sqlite3": "^5.1.8-vscode",
     "better-sqlite3": "^11.9.1",
-    "drizzle-kit": "^0.30.5",
-    "eslint": "^9.22.0"
+    "drizzle-kit": "^0.30.6",
+    "eslint": "^9.23.0"
   },
   "peerDependencies": {
     "typescript": "^5.7.3"
