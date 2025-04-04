@@ -30,4 +30,10 @@ export const Config = {
   defaultClan: defaultClan
 };
 
+// Debug output for Google config
+console.log("Google config loaded:");
+console.log(`  Sheet ID: ${Config.google.sheetId ? 'Yes' : 'No'}`);
+console.log(`  Service Account: ${Config.google.serviceAccountEmail ? 'Yes' : 'No'}`);
+console.log(`  Private Key: ${Config.google.privateKey ? 'Yes' : 'No'}`);
+
 export default Config;

@@ -21,6 +21,8 @@
     "update:data": "bun run src/utils/cli/update-data.ts",
     "update:battles": "bun run src/utils/cli/update-battles.ts",
     "export:sheets": "bun run src/utils/cli/export-sheets.ts",
+    "check:sheets": "bun run src/utils/cli/check-sheets-config.ts",
+    "test:sheets": "bun run src/utils/cli/google-sheets-test.ts",
     "log:debug": "LOG_LEVEL=DEBUG bun run dev",
     "log:info": "LOG_LEVEL=INFO bun run dev",
     "log:warn": "LOG_LEVEL=WARN bun run dev"

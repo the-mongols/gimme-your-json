@@ -1,15 +1,20 @@
 // src/services/sheets/client.ts
-import { db } from '../../database/db.js';
-import { players, ships } from '../../database/drizzle/schema.js';
-import { eq, and } from 'drizzle-orm';
-import { Config } from '../../utils/config.js';
-import { Logger } from '../../utils/logger.js';
-import { handleError, ErrorCode } from '../../utils/errors.js';
-import crypto from 'crypto';
-import { promisify } from 'util';
+import { db } from "../../database/db.js";
+import { players, ships } from "../../database/drizzle/schema.js";
+import { eq, and } from "drizzle-orm";
+import { Config } from "../../utils/config.js";
+import { Logger } from "../../utils/logger.js";
+import { handleError, ErrorCode } from "../../utils/errors.js";
+import crypto from "crypto";
 
-// Async sign function for JWT
-const asyncSign = promisify(crypto.sign);
+// Interface for Google Sheets API response
+interface GoogleSheetsResponse {
+  spreadsheetId: string;
+  updatedRange: string;
+  updatedCells: number;
+  updatedRows: number;
+  updatedColumns: number;
+}
 
 /**
  * Generate a JWT token for Google Sheets API authentication
@@ -20,48 +25,86 @@ const asyncSign = promisify(crypto.sign);
 async function generateJWT(email: string, privateKey: string): Promise<string> {
   try {
     Logger.debug('Generating JWT for Google Sheets API');
-    Logger.debug(`Service Account Email: ${email}`);
-    Logger.debug(`Private Key Length: ${privateKey.length} characters`);
-
+    
     // Current timestamp
     const now = Math.floor(Date.now() / 1000);
     const expiry = now + 3600; // Token valid for 1 hour
 
-    // JWT Header (Base64Url encoded)
-    const header = Buffer.from(JSON.stringify({
-      alg: 'RS256',
-      typ: 'JWT'
-    })).toString('base64url');
+    // JWT Header
+    const header = {
+      alg: "RS256",
+      typ: "JWT"
+    };
 
-    // JWT Payload (Base64Url encoded)
-    const payload = Buffer.from(JSON.stringify({
+    // JWT Payload
+    const payload = {
       iss: email,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      aud: 'https://oauth2.googleapis.com/token',
+      scope: "https://www.googleapis.com/auth/spreadsheets",
+      aud: "https://oauth2.googleapis.com/token",
       exp: expiry,
       iat: now
-    })).toString('base64url');
+    };
 
-    // Signing input
-    const signingInput = `${header}.${payload}`;
+    // Encode header and payload
+    const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
+    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+
+    // Create signing input
+    const signingInput = `${encodedHeader}.${encodedPayload}`;
 
     // Sign the input with the private key
-    const privateKeyObject = crypto.createPrivateKey(privateKey);
-    const signature = await asyncSign('sha256', Buffer.from(signingInput), privateKeyObject);
+    const sign = crypto.createSign('RSA-SHA256');
+    sign.update(signingInput);
+    sign.end();
+    
+    const signature = sign.sign(privateKey);
     const encodedSignature = signature.toString('base64url');
 
-    // Construct the JWT
-    const jwt = `${signingInput}.${encodedSignature}`;
-
-    Logger.debug('JWT generated successfully');
-    return jwt;
+    // Construct and return the JWT
+    return `${signingInput}.${encodedSignature}`;
   } catch (error) {
-    Logger.error('JWT generation failed:', error);
+    Logger.error('Error generating JWT:', error);
     throw handleError(
-      'Failed to generate JWT',
+      'Failed to generate authentication token',
       error,
-      ErrorCode.API_AUTHENTICATION_FAILED,
-      'Authentication token generation failed'
+      ErrorCode.API_AUTHENTICATION_FAILED
+    );
+  }
+}
+
+/**
+ * Get an access token from Google OAuth service using JWT
+ * @param jwt JWT token
+ * @returns Access token
+ */
+async function getAccessToken(jwt: string): Promise<string> {
+  try {
+    Logger.debug('Getting access token from Google OAuth service');
+    
+    const response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      throw new Error(`Failed to get access token: ${response.status} ${errorData}`);
+    }
+
+    const data = await response.json();
+    return data.access_token;
+  } catch (error) {
+    Logger.error('Error getting access token:', error);
+    throw handleError(
+      'Failed to authenticate with Google',
+      error, 
+      ErrorCode.API_AUTHENTICATION_FAILED
     );
   }
 }
@@ -73,21 +116,18 @@ async function generateJWT(email: string, privateKey: string): Promise<string> {
  * @param values Array of row values to upload
  * @returns Success status
  */
-async function uploadToGoogleSheets(
+export async function uploadToSheet(
   sheetId: string, 
   sheetName: string, 
   values: any[][]
-): Promise<boolean> {
+): Promise<GoogleSheetsResponse> {
   try {
     Logger.info(`Uploading data to Google Sheets: ${sheetName}`);
-    Logger.debug(`Sheet ID: ${sheetId}`);
-    Logger.debug(`Values to upload: ${JSON.stringify(values.slice(0, 5))}`); // Log first 5 rows
-
+    
     const serviceAccountEmail = Config.google.serviceAccountEmail;
     const privateKey = Config.google.privateKey;
     
     if (!serviceAccountEmail || !privateKey) {
-      Logger.error('Google API credentials missing');
       throw handleError(
         'Google Sheets upload failed',
         'Google API credentials missing. Check environment variables.',
@@ -95,45 +135,124 @@ async function uploadToGoogleSheets(
       );
     }
 
-    // Generate access token
-    const token = await generateJWT(serviceAccountEmail, privateKey);
+    // Generate JWT and get access token
+    const jwt = await generateJWT(serviceAccountEmail, privateKey);
+    const accessToken = await getAccessToken(jwt);
 
     // Prepare request body
     const body = {
       values: values
     };
 
+    // Calculate range based on data dimensions
+    const numRows = values.length;
+    const numCols = values.reduce((max, row) => Math.max(max, row.length), 0);
+    const range = `${sheetName}!A1:${String.fromCharCode(65 + numCols - 1)}${numRows}`;
+
     // Make the API request
     const response = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${sheetName}!A1:Z${values.length + 1}?valueInputOption=USER_ENTERED`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?valueInputOption=USER_ENTERED`,
       {
         method: 'PUT',
         headers: {
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(body)
       }
     );
 
-    // Log response details
-    Logger.debug(`API Response Status: ${response.status}`);
-    
     if (!response.ok) {
       const errorBody = await response.text();
-      Logger.error(`Google Sheets API Error: ${errorBody}`);
-      
       throw handleError(
         'Google Sheets API error',
-        errorBody,
+        `${response.status} ${errorBody}`,
         ErrorCode.API_REQUEST_FAILED
       );
     }
 
-    return true;
-  } catch (error) {
-    Logger.error('Full error during Google Sheets upload:', error);
+    const result = await response.json();
+    Logger.info(`Successfully updated ${result.updatedCells} cells in range ${result.updatedRange}`);
     
+    return result;
+  } catch (error) {
+    if (!(error instanceof Error && error.name === 'BotError')) {
+      throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Upload data to a specific range within a sheet
+ * @param sheetId Google Sheets ID
+ * @param sheetName Sheet name within the spreadsheet
+ * @param startRow Starting row for the data (1-based)
+ * @param values Array of row values to upload
+ * @returns Success status
+ */
+export async function uploadToRangeInSheet(
+  sheetId: string,
+  sheetName: string,
+  startRow: number,
+  values: any[][]
+): Promise<GoogleSheetsResponse> {
+  try {
+    Logger.info(`Uploading data to Google Sheets: ${sheetName} starting at row ${startRow}`);
+    
+    const serviceAccountEmail = Config.google.serviceAccountEmail;
+    const privateKey = Config.google.privateKey;
+    
+    if (!serviceAccountEmail || !privateKey) {
+      throw handleError(
+        'Google Sheets upload failed',
+        'Google API credentials missing. Check environment variables.',
+        ErrorCode.CONFIG_MISSING_VALUE
+      );
+    }
+
+    // Generate JWT and get access token
+    const jwt = await generateJWT(serviceAccountEmail, privateKey);
+    const accessToken = await getAccessToken(jwt);
+
+    // Prepare request body
+    const body = {
+      values: values
+    };
+
+    // Calculate range based on data dimensions
+    const numRows = values.length;
+    const numCols = values.reduce((max, row) => Math.max(max, row.length), 0);
+    const endRow = startRow + numRows - 1;
+    const range = `${sheetName}!A${startRow}:${String.fromCharCode(65 + numCols - 1)}${endRow}`;
+
+    // Make the API request
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${range}?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      }
+    );
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw handleError(
+        'Google Sheets API error',
+        `${response.status} ${errorBody}`,
+        ErrorCode.API_REQUEST_FAILED
+      );
+    }
+
+    const result = await response.json();
+    Logger.info(`Successfully updated ${result.updatedCells} cells in range ${result.updatedRange}`);
+    
+    return result;
+  } catch (error) {
     if (!(error instanceof Error && error.name === 'BotError')) {
       throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
     }
@@ -206,11 +325,9 @@ export async function uploadDataToSheets(): Promise<{
 export async function uploadClanDataToSheet(clanTag: string, sheetId: string): Promise<boolean> {
   try {
     Logger.info(`Uploading data for clan ${clanTag} to Google Sheets...`);
-    Logger.debug(`Using Sheet ID: ${sheetId}`);
-
+    
     const clan = Object.values(Config.clans).find(c => c.tag === clanTag);
     if (!clan) {
-      Logger.error(`Clan ${clanTag} not found in configuration`);
       throw handleError(
         `Google Sheets upload failed`,
         `Clan with tag "${clanTag}" not found in configuration`,
@@ -220,26 +337,38 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
 
     // Get player data with ships
     const playersData = await getPlayersWithShips(clan.id.toString());
-    Logger.debug(`Found ${playersData.length} players with ships`);
+    Logger.debug(`Found ${playersData.length} players with ships data`);
 
     // Prepare data for player stats sheet
     const playerRows = preparePlayerData(playersData);
-    Logger.debug(`Prepared ${playerRows.length} player rows`);
+    Logger.debug(`Prepared ${playerRows.length} player rows for sheet`);
     
     // Prepare data for ship stats sheet
     const shipRows = prepareShipData(playersData);
-    Logger.debug(`Prepared ${shipRows.length} ship rows`);
+    Logger.debug(`Prepared ${shipRows.length} ship rows for sheet`);
 
-    // Upload player data
-    await uploadToGoogleSheets(sheetId, `${clanTag}_PlayerStats`, playerRows);
+    // Check if the clan's sheet exists, and use that instead of creating new ones
+    // For the existing structure: Cover page, PN, PN32, PN31, PN30, PNEU
+    // We'll write to the sheet named exactly after the clan tag
     
-    // Upload ship data
-    await uploadToGoogleSheets(sheetId, `${clanTag}_ShipStats`, shipRows);
+    // Upload player data to the clan's sheet
+    await uploadToSheet(sheetId, clanTag, playerRows);
+    
+    // For ship data, we might want to write to a different range or tab
+    // Let's add a "Ships" range/section to the same sheet
+    // Determine the start row for ships data (after player data with some spacing)
+    const shipDataStartRow = playerRows.length + 3; // 2 rows of space after player data
+    
+    // Upload ship data to the same sheet but at a different range
+    await uploadToRangeInSheet(sheetId, clanTag, shipDataStartRow, shipRows);
     
     Logger.info(`Google Sheets data updated successfully for clan ${clanTag}`);
     return true;
   } catch (error) {
     Logger.error(`Error updating Google Sheets for clan ${clanTag}:`, error);
+    if (!(error instanceof Error && error.name === 'BotError')) {
+      throw handleError(`Failed to update Google Sheets for clan ${clanTag}`, error);
+    }
     throw error;
   }
 }
@@ -293,11 +422,17 @@ async function getPlayersWithShips(clanId: string) {
  * @returns Formatted rows for Google Sheets
  */
 function preparePlayerData(playersData: any[]): any[][] {
-  // Format for player summary sheet
+  // Add title and timestamp headers
+  const timestamp = new Date().toLocaleString();
   const rows = [
-    ['AccountID', 'Username', 'Clan', 'ShipCount', 'AvgTier', 'AvgWinRate', 'TopShips', 'LastUpdated']
+    [`PLAYER STATISTICS - Updated: ${timestamp}`],
+    [''] // Empty row for spacing
   ];
   
+  // Add column headers
+  rows.push(['AccountID', 'Username', 'Clan', 'ShipCount', 'AvgTier', 'AvgWinRate', 'TopShips', 'LastUpdated']);
+  
+  // Add player data
   for (const player of playersData) {
     rows.push([
       player.id,
@@ -320,10 +455,15 @@ function preparePlayerData(playersData: any[]): any[][] {
  * @returns Formatted rows for Google Sheets
  */
 function prepareShipData(playersData: any[]): any[][] {
-  // Headers for ship stats sheet
+  // Add title and timestamp headers
+  const timestamp = new Date().toLocaleString();
   const rows = [
-    ['Player', 'Ship', 'Tier', 'Type', 'Nation', 'Battles', 'WinRate', 'SurvivalRate', 'AvgDamage', 'ShipScore', 'LastPlayed']
+    [`SHIP STATISTICS - Updated: ${timestamp}`],
+    [''] // Empty row for spacing
   ];
+  
+  // Add column headers
+  rows.push(['Player', 'Ship', 'Tier', 'Type', 'Nation', 'Battles', 'WinRate', 'SurvivalRate', 'AvgDamage', 'ShipScore', 'LastPlayed']);
   
   // Flatten player->ships data
   for (const player of playersData) {
