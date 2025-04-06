@@ -4,7 +4,7 @@ import { players, ships } from "../../database/drizzle/schema.js";
 import { eq, and } from "drizzle-orm";
 import { Config } from "../../utils/config.js";
 import { Logger } from "../../utils/logger.js";
-import { handleError, ErrorCode } from "../../utils/errors.js";
+import { handleError, ErrorCode, BotError } from "../../utils/errors.js";
 import crypto from "crypto";
 
 // Interface for Google Sheets API response
@@ -24,7 +24,7 @@ interface GoogleSheetsResponse {
  */
 async function generateJWT(email: string, privateKey: string): Promise<string> {
   try {
-    Logger.debug('Generating JWT for Google Sheets API');
+    Logger.debug(`Generating JWT for Google Sheets API`);
     
     // Current timestamp
     const now = Math.floor(Date.now() / 1000);
@@ -57,17 +57,34 @@ async function generateJWT(email: string, privateKey: string): Promise<string> {
     sign.update(signingInput);
     sign.end();
     
-    const signature = sign.sign(privateKey);
-    const encodedSignature = signature.toString('base64url');
+    try {
+      const signature = sign.sign(privateKey);
+      const encodedSignature = signature.toString('base64url');
 
-    // Construct and return the JWT
-    return `${signingInput}.${encodedSignature}`;
+      // Construct and return the JWT
+      return `${signingInput}.${encodedSignature}`;
+    } catch (signError) {
+      // More detailed error for key format issues
+      if (signError instanceof Error && 
+          signError.message.includes('PEM')) {
+        throw new BotError(
+          "Invalid private key format",
+          ErrorCode.CONFIG_INVALID,
+          "Service account private key is not in valid PEM format. Check for proper line breaks and formatting."
+        );
+      }
+      
+      throw signError;
+    }
   } catch (error) {
+    if (error instanceof BotError) throw error;
+    
     Logger.error('Error generating JWT:', error);
     throw handleError(
       'Failed to generate authentication token',
       error,
-      ErrorCode.API_AUTHENTICATION_FAILED
+      ErrorCode.API_AUTHENTICATION_FAILED,
+      "Authentication failed - could not generate security token."
     );
   }
 }
@@ -93,19 +110,99 @@ async function getAccessToken(jwt: string): Promise<string> {
     });
 
     if (!response.ok) {
-      const errorData = await response.text();
-      throw new Error(`Failed to get access token: ${response.status} ${errorData}`);
+      const errorBody = await response.text();
+      let errorDetails;
+      
+      try {
+        // Try to parse error JSON
+        errorDetails = JSON.parse(errorBody);
+      } catch {
+        errorDetails = errorBody;
+      }
+      
+      // Check for specific OAuth errors
+      if (response.status === 400 && errorBody.includes("invalid_grant")) {
+        throw new BotError(
+          "Invalid service account credentials",
+          ErrorCode.API_AUTHENTICATION_FAILED,
+          "Authentication failed - service account credentials are invalid or expired."
+        );
+      }
+      
+      throw new BotError(
+        `Failed to get access token: ${response.status}`,
+        ErrorCode.API_AUTHENTICATION_FAILED,
+        `Authentication failed with status ${response.status}. ${errorDetails?.error_description || ''}`
+      );
     }
 
     const data = await response.json();
     return data.access_token;
   } catch (error) {
+    if (error instanceof BotError) throw error;
+    
     Logger.error('Error getting access token:', error);
     throw handleError(
       'Failed to authenticate with Google',
       error, 
-      ErrorCode.API_AUTHENTICATION_FAILED
+      ErrorCode.API_AUTHENTICATION_FAILED,
+      "Could not get access credentials from Google OAuth service."
     );
+  }
+}
+
+/**
+ * Check if we can access a spreadsheet by fetching its metadata
+ * @param sheetId Google Sheets ID
+ * @param accessToken Access token
+ * @returns True if we can access the spreadsheet
+ */
+async function checkSheetAccess(sheetId: string, accessToken: string): Promise<boolean> {
+  try {
+    Logger.debug(`Checking access to spreadsheet: ${sheetId}`);
+    
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties`,
+      {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      }
+    );
+    
+    if (!response.ok) {
+      const errorBody = await response.text();
+      
+      // Check for specific errors
+      if (response.status === 404) {
+        throw new BotError(
+          `Spreadsheet not found: ${sheetId}`,
+          ErrorCode.FILE_NOT_FOUND,
+          "The requested Google Sheet could not be found. Check the spreadsheet ID."
+        );
+      }
+      
+      if (response.status === 403) {
+        throw new BotError(
+          `Permission denied for spreadsheet: ${sheetId}`,
+          ErrorCode.COMMAND_PERMISSION_DENIED,
+          "Access denied to the Google Sheet. Make sure you've shared it with the service account."
+        );
+      }
+      
+      return false;
+    }
+    
+    const data = await response.json();
+    Logger.debug(`Successfully accessed spreadsheet: ${data.properties?.title}`);
+    return true;
+  } catch (error) {
+    if (error instanceof BotError) throw error;
+    
+    Logger.error('Error checking spreadsheet access:', error);
+    // Don't throw here, just return false
+    return false;
   }
 }
 
@@ -131,13 +228,25 @@ export async function uploadToSheet(
       throw handleError(
         'Google Sheets upload failed',
         'Google API credentials missing. Check environment variables.',
-        ErrorCode.CONFIG_MISSING_VALUE
+        ErrorCode.CONFIG_MISSING_VALUE,
+        "Google Sheets integration is not fully configured. Contact the bot administrator."
       );
     }
 
     // Generate JWT and get access token
     const jwt = await generateJWT(serviceAccountEmail, privateKey);
     const accessToken = await getAccessToken(jwt);
+    
+    // Verify we can access the spreadsheet before attempting to write
+    const hasAccess = await checkSheetAccess(sheetId, accessToken);
+    
+    if (!hasAccess) {
+      throw new BotError(
+        `Cannot access spreadsheet: ${sheetId}`,
+        ErrorCode.COMMAND_PERMISSION_DENIED,
+        "Could not access the Google Sheet. Make sure it exists and is shared with the service account."
+      );
+    }
 
     // Prepare request body
     const body = {
@@ -148,6 +257,8 @@ export async function uploadToSheet(
     const numRows = values.length;
     const numCols = values.reduce((max, row) => Math.max(max, row.length), 0);
     const range = `${sheetName}!A1:${String.fromCharCode(65 + numCols - 1)}${numRows}`;
+    
+    Logger.debug(`Updating range: ${range} with ${numRows} rows x ${numCols} columns`);
 
     // Make the API request
     const response = await fetch(
@@ -164,10 +275,21 @@ export async function uploadToSheet(
 
     if (!response.ok) {
       const errorBody = await response.text();
+      
+      // Check for specific error cases
+      if (response.status === 400 && errorBody.includes("Unable to parse range")) {
+        throw new BotError(
+          `Invalid sheet name: ${sheetName}`,
+          ErrorCode.COMMAND_INVALID_ARGUMENTS,
+          `The sheet tab "${sheetName}" does not exist in the spreadsheet.`
+        );
+      }
+      
       throw handleError(
         'Google Sheets API error',
         `${response.status} ${errorBody}`,
-        ErrorCode.API_REQUEST_FAILED
+        ErrorCode.API_REQUEST_FAILED,
+        "Error updating Google Sheet. Please try again later."
       );
     }
 
@@ -176,10 +298,9 @@ export async function uploadToSheet(
     
     return result;
   } catch (error) {
-    if (!(error instanceof Error && error.name === 'BotError')) {
-      throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
-    }
-    throw error;
+    if (error instanceof BotError) throw error;
+    
+    throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
   }
 }
 
@@ -207,13 +328,25 @@ export async function uploadToRangeInSheet(
       throw handleError(
         'Google Sheets upload failed',
         'Google API credentials missing. Check environment variables.',
-        ErrorCode.CONFIG_MISSING_VALUE
+        ErrorCode.CONFIG_MISSING_VALUE,
+        "Google Sheets integration is not fully configured. Contact the bot administrator."
       );
     }
 
     // Generate JWT and get access token
     const jwt = await generateJWT(serviceAccountEmail, privateKey);
     const accessToken = await getAccessToken(jwt);
+    
+    // Verify we can access the spreadsheet before attempting to write
+    const hasAccess = await checkSheetAccess(sheetId, accessToken);
+    
+    if (!hasAccess) {
+      throw new BotError(
+        `Cannot access spreadsheet: ${sheetId}`,
+        ErrorCode.COMMAND_PERMISSION_DENIED,
+        "Could not access the Google Sheet. Make sure it exists and is shared with the service account."
+      );
+    }
 
     // Prepare request body
     const body = {
@@ -225,6 +358,8 @@ export async function uploadToRangeInSheet(
     const numCols = values.reduce((max, row) => Math.max(max, row.length), 0);
     const endRow = startRow + numRows - 1;
     const range = `${sheetName}!A${startRow}:${String.fromCharCode(65 + numCols - 1)}${endRow}`;
+    
+    Logger.debug(`Updating range: ${range} with ${numRows} rows x ${numCols} columns`);
 
     // Make the API request
     const response = await fetch(
@@ -241,10 +376,21 @@ export async function uploadToRangeInSheet(
 
     if (!response.ok) {
       const errorBody = await response.text();
+      
+      // Check for specific error cases
+      if (response.status === 400 && errorBody.includes("Unable to parse range")) {
+        throw new BotError(
+          `Invalid sheet name: ${sheetName}`,
+          ErrorCode.COMMAND_INVALID_ARGUMENTS,
+          `The sheet tab "${sheetName}" does not exist in the spreadsheet.`
+        );
+      }
+      
       throw handleError(
         'Google Sheets API error',
         `${response.status} ${errorBody}`,
-        ErrorCode.API_REQUEST_FAILED
+        ErrorCode.API_REQUEST_FAILED,
+        "Error updating Google Sheet. Please try again later."
       );
     }
 
@@ -253,10 +399,9 @@ export async function uploadToRangeInSheet(
     
     return result;
   } catch (error) {
-    if (!(error instanceof Error && error.name === 'BotError')) {
-      throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
-    }
-    throw error;
+    if (error instanceof BotError) throw error;
+    
+    throw handleError('Error uploading to Google Sheets', error, ErrorCode.API_REQUEST_FAILED);
   }
 }
 
@@ -347,26 +492,58 @@ export async function uploadClanDataToSheet(clanTag: string, sheetId: string): P
     const shipRows = prepareShipData(playersData);
     Logger.debug(`Prepared ${shipRows.length} ship rows for sheet`);
 
-    // Check if the clan's sheet exists, and use that instead of creating new ones
-    // For the existing structure: Cover page, PN, PN32, PN31, PN30, PNEU
-    // We'll write to the sheet named exactly after the clan tag
-    
-    // Upload player data to the clan's sheet
-    await uploadToSheet(sheetId, clanTag, playerRows);
-    
-    // For ship data, we might want to write to a different range or tab
-    // Let's add a "Ships" range/section to the same sheet
-    // Determine the start row for ships data (after player data with some spacing)
-    const shipDataStartRow = playerRows.length + 3; // 2 rows of space after player data
-    
-    // Upload ship data to the same sheet but at a different range
-    await uploadToRangeInSheet(sheetId, clanTag, shipDataStartRow, shipRows);
-    
-    Logger.info(`Google Sheets data updated successfully for clan ${clanTag}`);
-    return true;
+    // Try to use the clan tag as the sheet name since this is how the spreadsheet is structured
+    try {
+      // Upload player data to the clan's sheet
+      await uploadToSheet(sheetId, clanTag, playerRows);
+      
+      // For ship data, use a different range in the same sheet
+      const shipDataStartRow = playerRows.length + 3; // 2 rows of space after player data
+      await uploadToRangeInSheet(sheetId, clanTag, shipDataStartRow, shipRows);
+      
+      Logger.info(`Google Sheets data updated successfully for clan ${clanTag}`);
+      return true;
+    } catch (error) {
+      // If using the clan tag as sheet name fails, try a fallback approach
+      if (error instanceof BotError && 
+          error.code === ErrorCode.COMMAND_INVALID_ARGUMENTS &&
+          error.message.includes('Invalid sheet name')) {
+        
+        Logger.warn(`Sheet tab "${clanTag}" not found, trying alternative sheet names...`);
+        
+        // Try each of the potential sheet names in our spreadsheet structure
+        const potentialSheetNames = ["Cover Page", "PN", "PN30", "PN31", "PN32", "PNEU"];
+        
+        for (const sheetName of potentialSheetNames) {
+          try {
+            Logger.info(`Trying sheet name: ${sheetName}`);
+            
+            // Upload player data
+            await uploadToSheet(sheetId, sheetName, playerRows);
+            
+            // Upload ship data
+            const shipDataStartRow = playerRows.length + 3;
+            await uploadToRangeInSheet(sheetId, sheetName, shipDataStartRow, shipRows);
+            
+            Logger.info(`Google Sheets data updated successfully using sheet tab "${sheetName}"`);
+            return true;
+          } catch (innerError) {
+            // Continue to next sheet name if this one fails
+            Logger.warn(`Failed with sheet name "${sheetName}": ${innerError instanceof Error ? innerError.message : String(innerError)}`);
+          }
+        }
+        
+        // If we get here, all fallbacks failed
+        Logger.error(`All sheet name attempts failed for clan ${clanTag}`);
+        return false;
+      } else {
+        // Rethrow original error
+        throw error;
+      }
+    }
   } catch (error) {
     Logger.error(`Error updating Google Sheets for clan ${clanTag}:`, error);
-    if (!(error instanceof Error && error.name === 'BotError')) {
+    if (!(error instanceof BotError)) {
       throw handleError(`Failed to update Google Sheets for clan ${clanTag}`, error);
     }
     throw error;
